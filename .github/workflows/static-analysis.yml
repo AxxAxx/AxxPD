@@ -1,0 +1,62 @@
+name: Static Analysis
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  cppcheck:
+    runs-on: ubuntu-latest
+
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Build Docker image (includes cppcheck)
+      run: cd Firmware && docker build -t axxpd-builder -f Containerfile .
+
+    - name: Run cppcheck on application code
+      run: |
+        docker run --rm axxpd-builder cppcheck \
+          --enable=warning,performance,portability \
+          --suppress=missingIncludeSystem \
+          --suppress=unusedFunction \
+          --suppress=unmatchedSuppression \
+          --error-exitcode=1 \
+          --inline-suppr \
+          -I Core/Inc \
+          -I axxpd_firmware \
+          -I Drivers/LCD \
+          -I Drivers/UGUI \
+          -DUSE_HAL_DRIVER \
+          -DSTM32G491xx \
+          --language=c++ \
+          axxpd_firmware/ \
+          2>&1 | tee /dev/stderr
+
+    - name: Run cppcheck on HAL application code
+      run: |
+        docker run --rm axxpd-builder cppcheck \
+          --enable=warning,performance,portability \
+          --suppress=missingIncludeSystem \
+          --suppress=unusedFunction \
+          --suppress=unmatchedSuppression \
+          --error-exitcode=1 \
+          --inline-suppr \
+          -I Core/Inc \
+          -I Drivers/LCD \
+          -I Drivers/UGUI \
+          -DUSE_HAL_DRIVER \
+          -DSTM32G491xx \
+          Core/Src/main.c \
+          Core/Src/ina228.c \
+          Core/Src/ui.c \
+          Core/Src/settings.c \
+          Core/Src/buttons.c \
+          Core/Src/buzzer.c \
+          Core/Src/graph.c \
+          Core/Src/ntc.c \
+          Core/Src/boot_selector.c \
+          2>&1 | tee /dev/stderr

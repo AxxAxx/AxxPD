@@ -1,0 +1,23 @@
+# Build artifacts
+Firmware/build/
+*.o
+*.d
+*.elf
+*.hex
+*.bin
+*.map
+*.su
+*.lss
+
+# IDE (user-specific)
+.vscode/
+*.launch
+*.ioc.bak
+
+# OS
+Thumbs.db
+.DS_Store
+desktop.ini
+
+# Claude Code
+.claude/

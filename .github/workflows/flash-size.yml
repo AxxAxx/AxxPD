@@ -1,0 +1,69 @@
+name: Flash Size Check
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  size-check:
+    runs-on: ubuntu-latest
+
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Build firmware
+      run: cd Firmware && docker build -t axxpd-builder -f Containerfile .
+
+    - name: Check flash usage
+      run: |
+        # Parse text+data from arm-none-eabi-size output
+        SIZE_OUTPUT=$(docker run --rm axxpd-builder arm-none-eabi-size /app/build/AxxPD.elf)
+        echo "$SIZE_OUTPUT"
+        echo ""
+
+        # Extract text and data columns (flash = text + data)
+        TEXT=$(echo "$SIZE_OUTPUT" | tail -1 | awk '{print $1}')
+        DATA=$(echo "$SIZE_OUTPUT" | tail -1 | awk '{print $2}')
+        FLASH_USED=$((TEXT + DATA))
+        FLASH_TOTAL=262144  # 256 KB
+        PERCENT=$((FLASH_USED * 100 / FLASH_TOTAL))
+
+        echo "Flash usage: ${FLASH_USED} / ${FLASH_TOTAL} bytes (${PERCENT}%)"
+        echo ""
+
+        # Fail if over 90%
+        if [ "$PERCENT" -gt 90 ]; then
+          echo "::error::Flash usage ${PERCENT}% exceeds 90% limit (${FLASH_USED} / ${FLASH_TOTAL} bytes)"
+          exit 1
+        elif [ "$PERCENT" -gt 85 ]; then
+          echo "::warning::Flash usage ${PERCENT}% is above 85% (${FLASH_USED} / ${FLASH_TOTAL} bytes)"
+        else
+          echo "Flash usage OK (${PERCENT}%)"
+        fi
+
+    - name: Add size to job summary
+      if: success()
+      run: |
+        SIZE_OUTPUT=$(docker run --rm axxpd-builder arm-none-eabi-size /app/build/AxxPD.elf)
+        TEXT=$(echo "$SIZE_OUTPUT" | tail -1 | awk '{print $1}')
+        DATA=$(echo "$SIZE_OUTPUT" | tail -1 | awk '{print $2}')
+        BSS=$(echo "$SIZE_OUTPUT" | tail -1 | awk '{print $3}')
+        FLASH_USED=$((TEXT + DATA))
+        FLASH_TOTAL=262144
+        PERCENT=$((FLASH_USED * 100 / FLASH_TOTAL))
+        RAM_USED=$((DATA + BSS))
+        RAM_TOTAL=114688  # 112 KB
+
+        echo "## Firmware Size Report" >> $GITHUB_STEP_SUMMARY
+        echo "" >> $GITHUB_STEP_SUMMARY
+        echo "| Region | Used | Total | Usage |" >> $GITHUB_STEP_SUMMARY
+        echo "|--------|------|-------|-------|" >> $GITHUB_STEP_SUMMARY
+        echo "| Flash  | ${FLASH_USED} B | ${FLASH_TOTAL} B (256 KB) | **${PERCENT}%** |" >> $GITHUB_STEP_SUMMARY
+        echo "| RAM    | ${RAM_USED} B | ${RAM_TOTAL} B (112 KB) | **$((RAM_USED * 100 / RAM_TOTAL))%** |" >> $GITHUB_STEP_SUMMARY
+        echo "" >> $GITHUB_STEP_SUMMARY
+        echo "\`\`\`" >> $GITHUB_STEP_SUMMARY
+        echo "$SIZE_OUTPUT" >> $GITHUB_STEP_SUMMARY
+        echo "\`\`\`" >> $GITHUB_STEP_SUMMARY

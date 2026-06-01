@@ -1,0 +1,40 @@
+AxxPD
+Copyright 2026 Axel Johansson
+
+This product includes software developed by Axel Johansson.
+https://github.com/AxxAxx/AxxPD
+
+"AxxPD" is a trademark of Axel Johansson. The GPL-3.0 license does not
+grant permission to use the trade name "AxxPD" except as required for
+reasonable and customary use in describing the origin of the Work.
+
+Derivative works MUST NOT use the name "AxxPD" as a product name.
+They may describe themselves as "based on AxxPD" or "derived from AxxPD
+firmware" for attribution purposes only.
+
+---
+
+This product includes the following third-party components:
+
+pdsink — USB PD 3.2 protocol stack
+  Copyright (c) pdsink contributors
+  Licensed under the MIT License
+  https://github.com/pdsink/pdsink
+
+ETL (Embedded Template Library)
+  Copyright (c) John Googleman
+  Licensed under the MIT License
+  https://github.com/ETLCPP/etl
+
+uGUI — Micro Graphics Library
+  Copyright (c) Achim Dobler
+  Licensed under the MIT License
+
+STM32 HAL, CMSIS, USB Device Library
+  Copyright (c) STMicroelectronics
+  Licensed under BSD-3-Clause
+
+Hardware Design:
+The hardware design files (PCB schematic, layout, and enclosure CAD) are
+proprietary and not included in this repository. The firmware source code
+is open source under the GPL-3.0 license; the hardware design is not.

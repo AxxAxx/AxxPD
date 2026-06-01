@@ -1,0 +1,17 @@
+FROM docker.io/alpine:3.22.0
+
+RUN set -eux; \
+    apk add --no-cache \
+        build-base=0.5-r3 \
+        gcc-arm-none-eabi=15.1.0-r0 \
+        g++-arm-none-eabi=15.1.0-r0 \
+        newlib=4.5.0.20241231-r0 \
+        cppcheck=2.14.2-r1 \
+    ;
+
+WORKDIR /app
+
+COPY . .
+
+RUN set -eux; \
+    make -j$(nproc);

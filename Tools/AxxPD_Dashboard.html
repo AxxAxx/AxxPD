@@ -1,0 +1,735 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>AxxPD Dashboard</title>
+<style>
+  *{margin:0;padding:0;box-sizing:border-box}
+  :root{
+    --bg:#111214;
+    --panel:#1c1e22;
+    --panel-border:#2a2d33;
+    --accent:#4a9eff;
+    --volt:#f5c542;
+    --curr:#e07b39;
+    --pwr:#5dbf8a;
+    --red:#d94f4f;
+    --grn:#5dbf8a;
+    --txt:#d6d6d6;
+    --muted:#6a6a80;
+    --deep:#0d0e10;
+    --sans:system-ui,-apple-system,'Segoe UI',sans-serif;
+    --mono:'JetBrains Mono',ui-monospace,SFMono-Regular,Consolas,monospace;
+  }
+  body{background:var(--bg);color:var(--txt);font-family:var(--sans);height:100vh;display:flex;flex-direction:column;overflow:auto}
+
+  /* ── Header ─────────────────────────────────────── */
+  .header{display:flex;align-items:center;justify-content:space-between;padding:10px 20px;background:var(--panel);border-bottom:1px solid var(--panel-border);flex-shrink:0}
+  .brand{display:flex;align-items:center;gap:10px}
+  .brand img{height:48px;filter:invert(1) brightness(.9)}
+  .brand .version{font-size:.75rem;color:var(--muted);font-family:var(--mono)}
+  .conn-bar{display:flex;align-items:center;gap:10px}
+  .status-dot{width:13px;height:13px;border-radius:50%;background:var(--red);transition:all .3s}
+  .status-dot.on{background:var(--grn);box-shadow:0 0 8px var(--grn)}
+  .conn-bar span{font-size:.8rem;color:var(--muted);font-family:var(--sans)}
+
+  /* ── Buttons ────────────────────────────────────── */
+  button{background:var(--panel);color:var(--txt);border:1px solid var(--panel-border);padding:6px 14px;border-radius:4px;cursor:pointer;font-family:var(--sans);font-size:.85rem;transition:border-color .15s,background .15s,transform .05s}
+  button:hover{border-color:var(--accent)}
+  button:active:not(:disabled){transform:translateY(1px)}
+  button:focus-visible{outline:2px solid var(--accent);outline-offset:1px}
+  button:disabled{opacity:.38;cursor:not-allowed}
+  button.primary{padding:8px 22px;font-weight:600;letter-spacing:.03em;border-color:var(--accent);border-width:2px}
+  button.primary.on{background:var(--grn);color:#111;border-color:var(--grn);box-shadow:0 0 10px #5dbf8a40}
+  button.primary.off{background:var(--red);color:#fff;border-color:var(--red)}
+  button.danger{border-color:var(--red)}
+  button.danger.active{background:var(--red);color:#fff;border-color:var(--red)}
+  select,input[type=text]{background:var(--deep);color:var(--txt);border:1px solid var(--panel-border);padding:6px 10px;border-radius:4px;font-family:var(--mono);font-size:.85rem}
+  select:focus,input[type=text]:focus{outline:none;border-color:var(--accent);box-shadow:0 0 0 2px #4a9eff22}
+
+  /* ── Main grid ──────────────────────────────────── */
+  .main{display:flex;flex-direction:column;gap:12px;padding:12px;flex:1;min-height:0}
+  .panel{background:var(--panel);border-radius:6px;padding:16px;border:1px solid var(--panel-border)}
+  .panel-header{display:flex;align-items:center;justify-content:space-between;margin-bottom:10px}
+  .panel-title{font-size:.75rem;color:var(--muted);text-transform:uppercase;letter-spacing:.1em;font-weight:600}
+
+  /* ── Readings panel ─────────────────────────────── */
+  .readings-panel{padding:20px 24px 16px}
+  .readings{display:grid;grid-template-columns:1fr 1fr 1fr;gap:16px}
+  .reading{text-align:center}
+  .reading .label{font-size:.75rem;color:var(--muted);text-transform:uppercase;letter-spacing:.08em;margin-bottom:6px;font-family:var(--sans)}
+  .reading .value{font-size:2.8rem;font-weight:700;line-height:1.1;font-family:var(--mono)}
+  .reading .unit{font-size:1.3rem;color:var(--muted);margin-left:2px;vertical-align:.15em}
+  .reading.volt .value{color:var(--volt)}
+  .reading.curr .value{color:var(--curr)}
+  .reading.pwr .value{color:var(--pwr)}
+  .set-val{font-size:1.1rem;color:var(--muted);margin-top:6px;font-weight:500;font-family:var(--mono)}
+  .info-row{display:flex;gap:16px;margin-top:14px;align-items:center;flex-wrap:wrap;padding-top:12px;border-top:1px solid var(--panel-border)}
+  .info-row .temp{font-size:.85rem;color:var(--txt);font-family:var(--mono)}
+  .info-row .pdo-info{font-size:.82rem;color:var(--accent);background:var(--deep);padding:4px 10px;border-radius:4px;font-family:var(--mono)}
+
+  /* ── Controls panel ─────────────────────────────── */
+  .controls-panel{padding:12px 16px}
+  .controls{display:flex;gap:6px;align-items:center;flex-wrap:wrap}
+  .ctrl-group{display:flex;align-items:center;gap:6px}
+  .ctrl-sep{width:1px;height:24px;background:var(--panel-border);margin:0 8px}
+  .ctrl-label{font-size:.75rem;color:var(--muted);font-family:var(--sans)}
+  .volt-input{width:80px;text-align:right;font-family:var(--mono)}
+
+  /* ── Chart panel ────────────────────────────────── */
+  .chart-panel{position:relative;padding:8px;height:clamp(200px,28vh,380px);flex-shrink:0}
+  .chart-panel canvas{width:100%;height:100%;display:block}
+  .chart-tooltip{position:absolute;background:#222428ee;color:var(--txt);font-family:var(--mono);font-size:.78rem;padding:6px 10px;border-radius:4px;pointer-events:none;display:none;border:1px solid var(--panel-border);line-height:1.5;white-space:nowrap}
+
+  /* ── Terminal panel ─────────────────────────────── */
+  .terminal-panel{display:flex;flex-direction:column;min-height:180px;flex:1}
+  .term-log{flex:1;overflow-y:auto;background:var(--deep);border-radius:4px;padding:8px 10px;font-size:.82rem;font-family:var(--mono);line-height:1.6;white-space:pre-wrap;word-break:break-all;min-height:0}
+  .term-log .tx{color:var(--accent)}
+  .term-log .rx{color:#ccc}
+  .term-log .err{color:var(--red)}
+  .term-input{display:flex;gap:6px;margin-top:8px;align-items:center}
+  .term-prompt{color:var(--accent);font-family:var(--mono);font-size:.85rem;padding:0 2px;user-select:none}
+  .term-input input{flex:1}
+
+  /* ── No serial overlay ──────────────────────────── */
+  .no-serial{position:fixed;inset:0;background:var(--bg);display:flex;align-items:center;justify-content:center;flex-direction:column;gap:12px;z-index:999}
+  .no-serial h2{color:var(--accent);font-family:var(--sans)}
+  .no-serial p{color:var(--muted);max-width:400px;text-align:center;font-family:var(--sans)}
+
+  /* ── Responsive ─────────────────────────────────── */
+  @media(max-width:800px){
+    .readings{grid-template-columns:1fr 1fr 1fr}
+    .reading .value{font-size:2rem}
+    .reading .unit{font-size:1rem}
+    .chart-panel{height:clamp(160px,25vh,280px)}
+  }
+  @media(max-width:500px){
+    .readings{grid-template-columns:1fr}
+    .reading .value{font-size:1.8rem}
+  }
+</style>
+</head>
+<body>
+
+<div class="header">
+  <div class="brand">
+    <img src="../Documentation/logo.png" alt="AxxPD">
+    <span class="version">v1.0</span>
+  </div>
+  <div class="conn-bar">
+    <div class="status-dot" id="statusDot"></div>
+    <span id="statusText">Disconnected</span>
+    <button id="btnConnect" onclick="toggleConnect()">Connect</button>
+  </div>
+</div>
+
+<div class="main">
+  <!-- Readings -->
+  <div class="panel readings-panel">
+    <div class="readings">
+      <div class="reading volt">
+        <div class="label">Voltage</div>
+        <div class="value" id="vVal">--.---<span class="unit">V</span></div>
+        <div class="set-val" id="vSet">SET --.- V</div>
+      </div>
+      <div class="reading curr">
+        <div class="label">Current</div>
+        <div class="value" id="iVal">--.---<span class="unit">A</span></div>
+        <div class="set-val" id="iSet">SET --.- A</div>
+      </div>
+      <div class="reading pwr">
+        <div class="label">Power</div>
+        <div class="value" id="pVal">--.--<span class="unit">W</span></div>
+      </div>
+    </div>
+    <div class="info-row">
+      <span class="temp" id="tempDie">INA228: --.-&deg;C</span>
+      <span class="temp" id="tempNtc">Board: --.-&deg;C</span>
+      <span class="pdo-info" id="pdoInfo">No contract</span>
+    </div>
+  </div>
+
+  <!-- Controls -->
+  <div class="panel controls-panel">
+    <div class="controls">
+      <div class="ctrl-group">
+        <button class="primary" id="btnOutput" onclick="toggleOutput()">Output OFF</button>
+        <button id="btnLock" onclick="toggleLock()">Unlocked</button>
+      </div>
+      <div class="ctrl-sep"></div>
+      <div class="ctrl-group">
+        <span class="ctrl-label">Voltage</span>
+        <input type="text" class="volt-input" id="voltInput" placeholder="12.0" onkeydown="if(event.key==='Enter')setVoltage()">
+        <button onclick="setVoltage()">Set V</button>
+      </div>
+      <div class="ctrl-sep"></div>
+      <div class="ctrl-group">
+        <span class="ctrl-label">PDO</span>
+        <select id="pdoSelect"><option value="">--</option></select>
+        <button onclick="selectPdo()">Set PDO</button>
+        <button onclick="refreshPdos()">Refresh</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Chart -->
+  <div class="panel chart-panel">
+    <canvas id="chart"></canvas>
+    <div class="chart-tooltip" id="chartTooltip"></div>
+  </div>
+
+  <!-- Terminal -->
+  <div class="panel terminal-panel">
+    <div class="panel-header">
+      <span class="panel-title">SCPI Console</span>
+      <button onclick="clearTerminal()" style="padding:3px 10px;font-size:.75rem">Clear</button>
+    </div>
+    <div class="term-log" id="termLog"></div>
+    <div class="term-input">
+      <span class="term-prompt">&gt;</span>
+      <input type="text" id="cmdInput" placeholder="Type command... (Enter to send)" onkeydown="handleCmdKey(event)">
+      <button onclick="sendCmd()">Send</button>
+    </div>
+  </div>
+</div>
+
+<div class="no-serial" id="noSerialMsg" style="display:none">
+  <h2>WebSerial Not Available</h2>
+  <p>This dashboard requires the WebSerial API. Please use <b>Google Chrome 89+</b> or <b>Microsoft Edge 89+</b> and ensure you are accessing this page over HTTPS or localhost.</p>
+</div>
+
+<script>
+'use strict';
+
+/* ── State ─────────────────────────────────────────────────── */
+let port = null, reader = null, writer = null, writerReady = null, connected = false;
+let outputOn = false, locked = false;
+let lineBuf = '';
+let lastSentCmd = '';
+const cmdHistory = [];
+let cmdHistIdx = -1;
+const HISTORY_LEN = 120;
+const voltHist = [], currHist = [], timeHist = [];
+let chartDirty = false;
+let pendingCt = false, pendingList = false;
+let pipePromise = null;
+
+/* ── DOM refs ──────────────────────────────────────────────── */
+const $dot = document.getElementById('statusDot');
+const $stxt = document.getElementById('statusText');
+const $btn = document.getElementById('btnConnect');
+const $v = document.getElementById('vVal');
+const $i = document.getElementById('iVal');
+const $p = document.getElementById('pVal');
+const $tdie = document.getElementById('tempDie');
+const $tntc = document.getElementById('tempNtc');
+const $pdo = document.getElementById('pdoInfo');
+const $outBtn = document.getElementById('btnOutput');
+const $lockBtn = document.getElementById('btnLock');
+const $pdoSel = document.getElementById('pdoSelect');
+const $vSet = document.getElementById('vSet');
+const $iSet = document.getElementById('iSet');
+const $log = document.getElementById('termLog');
+const $cmd = document.getElementById('cmdInput');
+const $tooltip = document.getElementById('chartTooltip');
+const canvas = document.getElementById('chart');
+const ctx = canvas.getContext('2d');
+
+/* ── Terminal auto-scroll state ────────────────────────────── */
+let termAutoScroll = true;
+$log.addEventListener('scroll', () => {
+  const atBottom = $log.scrollHeight - $log.scrollTop - $log.clientHeight < 30;
+  termAutoScroll = atBottom;
+});
+
+/* ── WebSerial check ───────────────────────────────────────── */
+if (!('serial' in navigator)) {
+  document.getElementById('noSerialMsg').style.display = 'flex';
+}
+
+/* ── Connection ────────────────────────────────────────────── */
+async function toggleConnect() {
+  if (connected) { await disconnect(); return; }
+  try {
+    port = await navigator.serial.requestPort();
+    await port.open({ baudRate: 115200 });
+    setConnected(true);
+    readLoop();
+    setTimeout(() => { sendLine('stream on'); refreshPdos(); sendLine('ct'); pendingCt = true; }, 300);
+  } catch (e) { logErr('Connection failed: ' + e.message); }
+}
+
+function setConnected(v) {
+  connected = v;
+  $dot.classList.toggle('on', v);
+  $stxt.textContent = v ? 'Connected' : 'Disconnected';
+  $btn.textContent = v ? 'Disconnect' : 'Connect';
+}
+
+async function disconnect() {
+  try { await sendLine('stream off'); } catch {}
+  connected = false;
+
+  // Cancel read side
+  try { if (reader) { await reader.cancel(); reader = null; } } catch {}
+
+  // Close writer and wait for pipe to finish
+  try {
+    if (writer) { await writer.close(); writer = null; }
+  } catch {}
+  try { if (pipePromise) { await pipePromise; pipePromise = null; } } catch {}
+
+  // Close port
+  try { if (port) { await port.close(); } } catch {}
+  port = null;
+  writerReady = null;
+  setConnected(false);
+}
+
+/* ── Serial I/O ────────────────────────────────────────────── */
+async function readLoop() {
+  let readPipe = null;
+  try {
+    const decoder = new TextDecoderStream();
+    readPipe = port.readable.pipeTo(decoder.writable);
+    reader = decoder.readable.getReader();
+    while (true) {
+      const { value, done } = await reader.read();
+      if (done) break;
+      if (value) processIncoming(value);
+    }
+  } catch (e) {
+    if (connected) logErr('Read error: ' + e.message);
+  }
+  // Clean up read pipe
+  try { if (readPipe) await readPipe; } catch {}
+  reader = null;
+  if (connected) {
+    setConnected(false);
+    attemptReconnect();
+  }
+}
+
+function processIncoming(chunk) {
+  lineBuf += chunk;
+  let lines = lineBuf.split('\n');
+  lineBuf = lines.pop() || '';
+  for (const raw of lines) {
+    const line = raw.replace(/\r/g, '').trim();
+    if (!line) continue;
+    if (lastSentCmd && line === lastSentCmd) { lastSentCmd = ''; continue; }
+    if (line.startsWith('> ')) continue;
+    if (line.startsWith('#S ')) {
+      parseStream(line);
+      continue;
+    }
+    logRx(line);
+    parseLine(line);
+  }
+}
+
+// Serialize writer initialization to prevent race conditions
+async function ensureWriter() {
+  if (writer) return;
+  if (writerReady) { await writerReady; return; }
+  writerReady = (async () => {
+    const encoder = new TextEncoderStream();
+    pipePromise = encoder.readable.pipeTo(port.writable);
+    writer = encoder.writable.getWriter();
+  })();
+  await writerReady;
+}
+
+async function sendLine(cmd) {
+  if (!port || !connected) return;
+  lastSentCmd = cmd;
+  try {
+    await ensureWriter();
+    await writer.write(cmd + '\r\n');
+    logTx(cmd);
+  } catch (e) { logErr('Send error: ' + e.message); }
+}
+
+/* ── Parsing ───────────────────────────────────────────────── */
+function parseStream(line) {
+  const parts = line.substring(3).split(',');
+  if (parts.length < 7) return;
+  const v = parseFloat(parts[0]) || 0;
+  const i = parseFloat(parts[1]) || 0;
+  const p = parseFloat(parts[2]) || 0;
+  const tdie = parseFloat(parts[5]) || 0;
+  const tntc = parseFloat(parts[6]) || 0;
+  const out = parts.length >= 8 ? parseInt(parts[7]) : 0;
+  $v.innerHTML = v.toFixed(3) + '<span class="unit">V</span>';
+  $i.innerHTML = i.toFixed(3) + '<span class="unit">A</span>';
+  $p.innerHTML = p.toFixed(2) + '<span class="unit">W</span>';
+  $tdie.innerHTML = 'INA228: ' + tdie.toFixed(1) + '&deg;C';
+  $tntc.innerHTML = 'Board: ' + tntc.toFixed(1) + '&deg;C';
+  outputOn = !!out;
+  updateOutputBtn();
+  pushData(v, i);
+}
+
+function parseLine(line) {
+  if (line.startsWith('V=')) {
+    const m = {};
+    line.split(/\s+/).forEach(p => { const [k, v] = p.split('='); if (k && v) m[k] = v; });
+    const v = parseFloat(m['V']) || 0;
+    const i = parseFloat(m['I']) || 0;
+    const w = v * i;
+    $v.innerHTML = v.toFixed(3) + '<span class="unit">V</span>';
+    $i.innerHTML = i.toFixed(3) + '<span class="unit">A</span>';
+    $p.innerHTML = w.toFixed(2) + '<span class="unit">W</span>';
+    if (m['Tdie']) $tdie.innerHTML = 'INA228: ' + parseFloat(m['Tdie']).toFixed(1) + '&deg;C';
+    if (m['Tntc']) $tntc.innerHTML = 'Board: ' + parseFloat(m['Tntc']).toFixed(1) + '&deg;C';
+    pushData(v, i);
+    return;
+  }
+  if (pendingCt && /^PDO\d+,/.test(line)) {
+    const parts = line.split(',');
+    if (parts.length >= 5) {
+      const [pdo, type, vStr, iStr, mode] = parts;
+      const setV = parseFloat(vStr) || 0;
+      const setI = parseFloat(iStr) || 0;
+      $pdo.textContent = pdo + ' ' + type + ' ' + setV.toFixed(1) + 'V ' + setI.toFixed(1) + 'A ' + mode;
+      $vSet.textContent = 'SET ' + setV.toFixed(1) + ' V';
+      $iSet.textContent = 'SET ' + setI.toFixed(1) + ' A';
+    }
+    pendingCt = false;
+    return;
+  }
+  if (pendingList && /^\d+,\w+,/.test(line)) {
+    const parts = line.split(',');
+    if (parts.length >= 5) {
+      const [n, type, vStr, iStr, mode] = parts;
+      const opt = document.createElement('option');
+      opt.value = n;
+      opt.textContent = n + ': ' + type + ' ' + parseFloat(vStr).toFixed(1) + 'V ' + parseFloat(iStr).toFixed(1) + 'A ' + mode;
+      $pdoSel.appendChild(opt);
+    }
+    return;
+  }
+}
+
+/* ── Data + Chart ──────────────────────────────────────────── */
+function pushData(v, i) {
+  const now = Date.now();
+  voltHist.push(v); currHist.push(i); timeHist.push(now);
+  while (voltHist.length > HISTORY_LEN) { voltHist.shift(); currHist.shift(); timeHist.shift(); }
+  chartDirty = true;
+}
+
+function chartLoop() {
+  if (chartDirty) {
+    drawChart();
+    chartDirty = false;
+  }
+  requestAnimationFrame(chartLoop);
+}
+requestAnimationFrame(chartLoop);
+
+function drawChart() {
+  const dpr = window.devicePixelRatio || 1;
+  const parent = canvas.parentElement;
+  const w = parent.clientWidth - 16;
+  const h = parent.clientHeight - 16;
+  if (w < 50 || h < 50) return;
+  canvas.width = w * dpr; canvas.height = h * dpr;
+  canvas.style.width = w + 'px'; canvas.style.height = h + 'px';
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+
+  const bgColor = getComputedStyle(document.documentElement).getPropertyValue('--deep').trim();
+  ctx.fillStyle = bgColor; ctx.fillRect(0, 0, w, h);
+
+  const pad = { l: 56, r: 56, t: 20, b: 28 };
+  const cw = w - pad.l - pad.r, ch = h - pad.t - pad.b;
+  if (cw < 20 || ch < 20) return;
+
+  // Auto-scale
+  let vMin = 0, vMax = 5, iMin = 0, iMax = 1;
+  if (voltHist.length > 0) {
+    vMax = Math.max(5, ...voltHist) * 1.15;
+    iMax = Math.max(0.5, ...currHist) * 1.15;
+  }
+
+  const gridColor = '#2a2d33';
+  const gridLines = 6;
+
+  // Horizontal grid
+  ctx.strokeStyle = gridColor; ctx.lineWidth = 0.5;
+  for (let j = 0; j <= gridLines; j++) {
+    const y = pad.t + ch - (j / gridLines) * ch;
+    ctx.beginPath(); ctx.moveTo(pad.l, y); ctx.lineTo(pad.l + cw, y); ctx.stroke();
+  }
+
+  // Vertical grid (every ~10s)
+  const vGridCount = 6;
+  for (let j = 0; j <= vGridCount; j++) {
+    const x = pad.l + (j / vGridCount) * cw;
+    ctx.beginPath(); ctx.moveTo(x, pad.t); ctx.lineTo(x, pad.t + ch); ctx.stroke();
+  }
+
+  // Y labels - voltage (left)
+  ctx.font = '10px ' + getComputedStyle(document.body).getPropertyValue('--mono');
+  ctx.fillStyle = '#f5c542'; ctx.textAlign = 'right';
+  for (let j = 0; j <= gridLines; j++) {
+    const y = pad.t + ch - (j / gridLines) * ch;
+    ctx.fillText((vMin + (vMax - vMin) * j / gridLines).toFixed(1) + 'V', pad.l - 6, y + 3);
+  }
+  // Y labels - current (right)
+  ctx.fillStyle = '#e07b39'; ctx.textAlign = 'left';
+  for (let j = 0; j <= gridLines; j++) {
+    const y = pad.t + ch - (j / gridLines) * ch;
+    ctx.fillText((iMin + (iMax - iMin) * j / gridLines).toFixed(2) + 'A', pad.l + cw + 6, y + 3);
+  }
+
+  // Time labels (dynamic)
+  ctx.fillStyle = '#6a6a80'; ctx.textAlign = 'center';
+  const windowSec = HISTORY_LEN * 0.5; // 500ms per sample
+  for (let j = 0; j <= vGridCount; j++) {
+    const x = pad.l + (j / vGridCount) * cw;
+    const sec = Math.round(windowSec - (j / vGridCount) * windowSec);
+    ctx.fillText(sec === 0 ? 'now' : '-' + sec + 's', x, h - 6);
+  }
+
+  // Legend
+  ctx.textAlign = 'left';
+  const legendX = pad.l + 8, legendY = pad.t + 14;
+  ctx.fillStyle = '#f5c542';
+  ctx.fillRect(legendX, legendY - 4, 14, 2);
+  ctx.fillText('Voltage', legendX + 18, legendY);
+  ctx.fillStyle = '#e07b39';
+  ctx.fillRect(legendX + 80, legendY - 4, 14, 2);
+  ctx.fillText('Current', legendX + 98, legendY);
+
+  if (voltHist.length < 2) return;
+  const n = voltHist.length;
+
+  function drawFill(data, min, max, color) {
+    const grad = ctx.createLinearGradient(0, pad.t, 0, pad.t + ch);
+    grad.addColorStop(0, color + '25');
+    grad.addColorStop(1, color + '03');
+    ctx.fillStyle = grad;
+    ctx.beginPath();
+    ctx.moveTo(pad.l + (0 / (HISTORY_LEN - 1)) * cw, pad.t + ch);
+    for (let k = 0; k < n; k++) {
+      const x = pad.l + (k / (HISTORY_LEN - 1)) * cw;
+      const y = pad.t + ch - ((data[k] - min) / (max - min)) * ch;
+      ctx.lineTo(x, y);
+    }
+    ctx.lineTo(pad.l + ((n - 1) / (HISTORY_LEN - 1)) * cw, pad.t + ch);
+    ctx.closePath();
+    ctx.fill();
+  }
+
+  function drawLine(data, min, max, color) {
+    ctx.strokeStyle = color; ctx.lineWidth = 2; ctx.lineJoin = 'round'; ctx.lineCap = 'round';
+    ctx.beginPath();
+    for (let k = 0; k < n; k++) {
+      const x = pad.l + (k / (HISTORY_LEN - 1)) * cw;
+      const y = pad.t + ch - ((data[k] - min) / (max - min)) * ch;
+      k === 0 ? ctx.moveTo(x, y) : ctx.lineTo(x, y);
+    }
+    ctx.stroke();
+  }
+
+  drawFill(voltHist, vMin, vMax, '#f5c542');
+  drawFill(currHist, iMin, iMax, '#e07b39');
+  drawLine(voltHist, vMin, vMax, '#f5c542');
+  drawLine(currHist, iMin, iMax, '#e07b39');
+}
+
+/* ── Chart hover tooltip ──────────────────────────────────── */
+canvas.addEventListener('mousemove', (e) => {
+  if (voltHist.length < 2) { $tooltip.style.display = 'none'; return; }
+  const rect = canvas.getBoundingClientRect();
+  const parent = canvas.parentElement;
+  const w = parent.clientWidth - 16;
+  const h = parent.clientHeight - 16;
+  const pad = { l: 56, r: 56, t: 20, b: 28 };
+  const cw = w - pad.l - pad.r;
+  const ch = h - pad.t - pad.b;
+  const mx = e.clientX - rect.left;
+  const my = e.clientY - rect.top;
+
+  if (mx < pad.l || mx > pad.l + cw || my < pad.t || my > pad.t + ch) {
+    $tooltip.style.display = 'none';
+    return;
+  }
+
+  const frac = (mx - pad.l) / cw;
+  const idx = Math.min(Math.max(Math.round(frac * (HISTORY_LEN - 1)), 0), voltHist.length - 1);
+  const v = voltHist[idx];
+  const i = currHist[idx];
+  if (v === undefined) { $tooltip.style.display = 'none'; return; }
+
+  $tooltip.innerHTML = v.toFixed(3) + ' V<br>' + i.toFixed(3) + ' A<br>' + (v * i).toFixed(2) + ' W';
+  $tooltip.style.display = 'block';
+
+  // Position tooltip, flip if near edge
+  const tipW = $tooltip.offsetWidth;
+  const tipH = $tooltip.offsetHeight;
+  let tx = e.clientX - rect.left + 12;
+  let ty = e.clientY - rect.top - tipH - 8;
+  if (tx + tipW > w) tx = e.clientX - rect.left - tipW - 12;
+  if (ty < 0) ty = e.clientY - rect.top + 16;
+  $tooltip.style.left = tx + 'px';
+  $tooltip.style.top = ty + 'px';
+
+  // Draw crosshair on next frame
+  chartDirty = true;
+  chartHoverIdx = idx;
+});
+
+canvas.addEventListener('mouseleave', () => {
+  $tooltip.style.display = 'none';
+  chartHoverIdx = -1;
+  chartDirty = true;
+});
+
+let chartHoverIdx = -1;
+
+// Extend drawChart to include crosshair
+const _origDrawChart = drawChart;
+drawChart = function() {
+  _origDrawChart();
+  if (chartHoverIdx < 0 || chartHoverIdx >= voltHist.length) return;
+  const parent = canvas.parentElement;
+  const w = parent.clientWidth - 16;
+  const h = parent.clientHeight - 16;
+  const pad = { l: 56, r: 56, t: 20, b: 28 };
+  const cw = w - pad.l - pad.r;
+  const ch = h - pad.t - pad.b;
+  const x = pad.l + (chartHoverIdx / (HISTORY_LEN - 1)) * cw;
+  ctx.strokeStyle = '#ffffff30';
+  ctx.lineWidth = 1;
+  ctx.setLineDash([4, 4]);
+  ctx.beginPath(); ctx.moveTo(x, pad.t); ctx.lineTo(x, pad.t + ch); ctx.stroke();
+  ctx.setLineDash([]);
+};
+
+/* ── Reconnect ─────────────────────────────────────────────── */
+async function attemptReconnect() {
+  if (!port) return; // Clean disconnect, no reconnect
+  for (let attempt = 0; attempt < 10; attempt++) {
+    await new Promise(r => setTimeout(r, 2000));
+    if (connected) return;
+    if (!port) return;
+    try {
+      await port.open({ baudRate: 115200 });
+      writer = null;
+      writerReady = null;
+      pipePromise = null;
+      setConnected(true);
+      readLoop();
+      setTimeout(() => sendLine('stream on'), 300);
+      logRx('Reconnected.');
+      return;
+    } catch (e) {
+      logErr('Reconnect attempt ' + (attempt + 1) + ' failed.');
+    }
+  }
+  logErr('Reconnect failed after 10 attempts.');
+  port = null;
+}
+
+/* ── Controls ──────────────────────────────────────────────── */
+function updateOutputBtn() {
+  $outBtn.textContent = outputOn ? 'Output ON' : 'Output OFF';
+  $outBtn.classList.toggle('on', outputOn);
+  $outBtn.classList.toggle('off', !outputOn);
+}
+
+function toggleOutput() {
+  outputOn = !outputOn;
+  sendLine(outputOn ? ':OUTP ON' : ':OUTP OFF');
+  updateOutputBtn();
+}
+
+function toggleLock() {
+  locked = !locked;
+  sendLine(locked ? ':SYST:LOCK ON' : ':SYST:LOCK OFF');
+  $lockBtn.textContent = locked ? 'Locked' : 'Unlocked';
+  $lockBtn.classList.toggle('danger', locked);
+  $lockBtn.classList.toggle('active', locked);
+}
+
+function refreshPdos() {
+  $pdoSel.innerHTML = '<option value="">--</option>';
+  pendingList = true;
+  sendLine('list');
+  setTimeout(() => { pendingList = false; }, 2000);
+}
+
+function selectPdo() {
+  const n = $pdoSel.value;
+  if (n) {
+    sendLine('setpdo ' + n);
+    setTimeout(() => { sendLine('ct'); pendingCt = true; }, 1000);
+    setTimeout(() => { sendLine('ct'); pendingCt = true; }, 2500);
+  }
+}
+
+function setVoltage() {
+  const input = document.getElementById('voltInput').value.trim();
+  if (!input) return;
+  const v = parseFloat(input.replace(/[vV]$/, ''));
+  if (isNaN(v) || v < 3.3 || v > 48) {
+    logErr('Invalid voltage (3.3-48V)');
+    return;
+  }
+  sendLine('set ' + v.toFixed(1) + 'V');
+  $vSet.textContent = 'SET ' + v.toFixed(1) + ' V';
+  setTimeout(() => { sendLine('ct'); pendingCt = true; }, 1000);
+  setTimeout(() => { sendLine('ct'); pendingCt = true; }, 2500);
+}
+
+function handleCmdKey(e) {
+  if (e.key === 'Enter') { sendCmd(); return; }
+  if (e.key === 'ArrowUp') {
+    e.preventDefault();
+    if (cmdHistory.length === 0) return;
+    if (cmdHistIdx < cmdHistory.length - 1) cmdHistIdx++;
+    $cmd.value = cmdHistory[cmdHistory.length - 1 - cmdHistIdx];
+    return;
+  }
+  if (e.key === 'ArrowDown') {
+    e.preventDefault();
+    if (cmdHistIdx > 0) { cmdHistIdx--; $cmd.value = cmdHistory[cmdHistory.length - 1 - cmdHistIdx]; }
+    else { cmdHistIdx = -1; $cmd.value = ''; }
+    return;
+  }
+}
+
+function sendCmd() {
+  const cmd = $cmd.value.trim();
+  if (!cmd) return;
+  if (cmdHistory[cmdHistory.length - 1] !== cmd) cmdHistory.push(cmd);
+  if (cmdHistory.length > 50) cmdHistory.shift();
+  cmdHistIdx = -1;
+  sendLine(cmd);
+  $cmd.value = '';
+  const lc = cmd.toLowerCase();
+  if (lc.startsWith('set') || lc.startsWith('rst') || lc === 'on' || lc === 'off') {
+    setTimeout(() => { sendLine('ct'); pendingCt = true; }, 1000);
+    setTimeout(() => { sendLine('ct'); pendingCt = true; }, 2500);
+  }
+}
+
+/* ── Terminal log ──────────────────────────────────────────── */
+function logTx(msg) { appendLog('tx', '>> ' + msg); }
+function logRx(msg) { appendLog('rx', '<< ' + msg); }
+function logErr(msg) { appendLog('err', '!! ' + msg); }
+function appendLog(cls, msg) {
+  const div = document.createElement('div');
+  div.className = cls;
+  div.textContent = msg;
+  $log.appendChild(div);
+  while ($log.childElementCount > 500) $log.removeChild($log.firstChild);
+  if (termAutoScroll) $log.scrollTop = $log.scrollHeight;
+}
+function clearTerminal() { $log.innerHTML = ''; }
+</script>
+</body>
+</html>

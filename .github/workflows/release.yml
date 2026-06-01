@@ -1,0 +1,39 @@
+name: Build and Release Firmware
+
+on:
+  push:
+    tags: ['v*']
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Build Docker image (compiles firmware)
+      run: cd Firmware && docker build -t axxpd-builder -f Containerfile .
+
+    - name: Extract .bin and .elf
+      run: |
+        docker create --name axxpd-build axxpd-builder
+        docker cp axxpd-build:/app/build/AxxPD.elf ./AxxPD-${GITHUB_REF_NAME}.elf
+        docker rm axxpd-build
+        docker run --rm axxpd-builder \
+          arm-none-eabi-objcopy -O binary /app/build/AxxPD.elf /dev/stdout \
+          > AxxPD-${GITHUB_REF_NAME}.bin
+
+    - name: Report firmware size
+      run: |
+        docker run --rm axxpd-builder arm-none-eabi-size /app/build/AxxPD.elf
+
+    - name: Create GitHub Release
+      uses: softprops/action-gh-release@v2
+      with:
+        files: |
+          AxxPD-*.bin
+          AxxPD-*.elf
+        generate_release_notes: true
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
