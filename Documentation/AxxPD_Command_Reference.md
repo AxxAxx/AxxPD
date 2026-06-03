@@ -114,7 +114,7 @@ set 9V 2A               # auto-select with current limit
 | Command | Description |
 |---------|-------------|
 | `protect` or `protect status` | Show current protection status and thresholds |
-| `protect ocp <A>` | Set over-current protection threshold |
+| `protect ocp <A>` | Set over-current protection threshold (0.1-7 A) |
 | `protect ovp <V>` | Set over-voltage protection threshold |
 | `protect clear` | Clear fault latch |
 
