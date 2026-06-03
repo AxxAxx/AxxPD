@@ -35,7 +35,7 @@ The firmware is written for the [STM32G491CCU6](https://www.st.com/en/microcontr
 AxxPD has 4 buttons:
 - **UP / DOWN** -- adjust voltage or navigate menus (hold to repeat)
 - **SELECT** -- confirm selection, cycle screens, enter edit mode
-- **POWER** -- short press: output ON/OFF, long press: safe shutdown
+- **POWER** -- short press: output ON/OFF, long press: output OFF
 
 The output starts **OFF** for safety. Press POWER to enable it. The status bar turns green when output is active.
 
@@ -53,6 +53,8 @@ Alternatively, use any serial terminal at 115200 baud. Type `help` for a command
 - **Output is OFF by default** -- press POWER to enable.
 - AxxPD monitors temperature and will warn at 60 C, shut down at 85 C.
 - Maximum output depends entirely on your charger's capabilities.
+- **Fault screens require SELECT to clear** -- the POWER button is blocked during active faults.
+- **Boot auto-select** defaults to a safe voltage (≤20 V) if the user doesn't interact within 10 seconds.
 
 # Table of Contents
 - [AxxPD Overview](#axxpd-overview)
@@ -78,9 +80,9 @@ Alternatively, use any serial terminal at 115200 baud. Type `help` for a command
 - USB-C PD 3.1 EPR sink supporting Fixed, PPS and AVS voltage modes. The available voltages and power depend entirely on the connected USB-C charger's capabilities.
 - 20-bit precision voltage, current and power monitoring via INA228 (6.8 mOhm shunt, 0.05% gain error).
 - Multi-layer hardware protection with sub-microsecond response times. See [Protection Architecture](#protection-architecture).
-- 1.47" 320x172 IPS TFT color display (ST7789V, SPI) with 4-button navigation and 6 UI screens: Dashboard, Graph, PDOs, Presets, Energy and Settings.
+- 1.47" 320x172 IPS TFT color display (ST7789V, SPI) with 4-button navigation and 6 UI screens: Dashboard, PDOs, Graph, Presets, Energy and Settings.
 - USB CDC serial interface for SCPI commands and data logging at 20 Hz.
-- USB DFU firmware updates -- hold SELECT at boot to enter DFU mode.
+- USB DFU firmware updates via `dfu` CLI command or Settings menu.
 - Programmable voltage presets stored in flash (up to 5 slots).
 - Programmable voltage sequencing with configurable step times.
 - Energy tracking with INA228 hardware Wh/Ah accumulators.
@@ -89,7 +91,6 @@ Alternatively, use any serial terminal at 115200 baud. Type `help` for a command
 - NTC thermal monitoring with staged protection (warn at 60 deg C, shutdown at 85 deg C).
 - Output bleed/discharge circuit for safe capacitor discharge when output is disabled.
 - Dual output: XT30 (female) and 4 mm shrouded banana jacks in parallel.
-- Dedicated 3.3 V output tap.
 
 # Specifications
 
@@ -104,7 +105,6 @@ Alternatively, use any serial terminal at 115200 baud. Type `help` for a command
 | OCP | Hardware: LTC4368 (7.4 A) + INA228 ALERT backup |
 | Display | 1.47" 320x172 IPS TFT (ST7789V, SPI) |
 | Outputs | XT30 female + 4 mm shrouded banana jacks |
-| Auxiliary | 3.3 V output tap |
 | Interface | USB CDC serial (SCPI + CLI) |
 | MCU | STM32G491CCU6 (Cortex-M4F, 128 MHz) |
 | Flash Usage | ~75% of 256 KB |
@@ -131,6 +131,14 @@ AxxPD implements multiple independent protection layers, ordered by response tim
 | 8 | R_GPD pull-down | Passive | Fail-safe -- MOSFET gates default OFF if LTC4368 unpowered |
 
 The LTC4368 hot-swap controller drives back-to-back BSC070N10NS5 MOSFETs with a charge pump gate drive (+13.1 V). The COMP1 + DAC3 backup OVP threshold is software-adjustable per negotiated voltage. A 100K pull-down on the SHDN pin (PA1/TIM15_CH1N) ensures the output remains off during MCU boot and reset.
+
+Additional firmware protection features:
+- **OCP retry with soft-start** -- configurable 3-retry policy (default) handles hot-plug inrush current. Output caps stay charged during retry for cleaner recovery via LTC4368 gate ramp.
+- **Charger disconnect detection** -- output auto-disabled when PD contract is lost.
+- **Output toggle cooldown** -- 1.5 s minimum between enable events to prevent MOSFET thermal stress.
+- **Fault buzzer override** -- critical fault tones always play even if buzzer is disabled in settings.
+- **Post-suppression fault poll** -- after the inrush suppression window expires, firmware polls LTC4368_FLT, INA228_ALERT, and COMP1 OVP to catch edge-triggered faults missed during suppression.
+- **OCP bounds** -- CLI `protect ocp` enforces 0.1 A minimum and 7 A maximum.
 
 # Power Flow
 ```
@@ -171,16 +179,16 @@ AxxPD has a 1.47" 320x172 IPS TFT display (ST7789V, SPI at 32 MHz) and 4 buttons
 - **UP** -- increase value / scroll up (hold-to-repeat)
 - **DOWN** -- decrease value / scroll down (hold-to-repeat)
 - **SELECT** -- confirm / cycle screens
-- **POWER** -- short press: output ON/OFF, long press: safe shutdown
+- **POWER** -- short press: output ON/OFF, long press: output OFF
 
 **Screen 1 -- Dashboard:**
-Large V (yellow) / I (orange) / W (green) readout. SET voltage and current targets. CC/CV mode indicator. Live UP/DOWN adjustment with blinking cursor in edit mode.
+Large V (yellow) / I (red) / W (green) readout. SET voltage and current targets. CC/CV mode indicator. Live UP/DOWN adjustment with blinking cursor in edit mode.
 
-**Screen 2 -- Graph:**
-Rolling V/I plot (10 s window). Column-based rendering for fast SPI updates. 15 Hz throttle.
-
-**Screen 3 -- PDOs:**
+**Screen 2 -- PDOs:**
 Scrollable list of source capability PDOs including EPR AVS entries. Cable e-marker info.
+
+**Screen 3 -- Graph:**
+Rolling V/I plot (10 s window). Column-based rendering for fast SPI updates. 15 Hz throttle.
 
 **Screen 4 -- Presets:**
 5 named user slots. Select and activate with one button press. Stored in flash.
@@ -239,7 +247,7 @@ STM32_Programmer_CLI -c port=SWD freq=4000 -w AxxPD.bin 0x08000000 -v -rst
 ```
 
 ## USB DFU
-1. Hold SELECT while connecting USB-C to enter DFU mode
+1. Enter DFU mode by sending the `dfu` command over USB serial, or via Settings > System > DFU
 2. Use STM32CubeProgrammer, select USB connection, and flash the `.bin` file
 3. Power cycle after flashing
 
@@ -272,7 +280,7 @@ Settings are accessed via the Settings screen (Screen 6) using the 4-button navi
 | Protection | Timer Shutoff | Auto-disable output after countdown | OFF |
 | Protection | Ah Limit | Disable output at charge limit | OFF |
 | Protection | Wh Limit | Disable output at energy limit | OFF |
-| Protection | Retry Policy | Latch / 1-retry / 3-retry on fault | Latch |
+| Protection | Retry Policy | Latch / 1-retry / 3-retry on fault | 3-retry |
 | Tools | Selftest | Walk all source PDOs, report pass/fail | -- |
 | Tools | Stream | Toggle USB CDC data streaming | OFF |
 | Calibration | V Offset | Voltage measurement offset | 0 |
