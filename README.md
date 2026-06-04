@@ -67,6 +67,7 @@ Alternatively, use any serial terminal at 115200 baud. Type `help` for a command
 - [Boot Sequence](#boot-sequence)
 - [User Interface](#user-interface)
 - [WebSerial Dashboard](#webserial-dashboard)
+- [Python Library](#python-library)
 - [SCPI Command Reference](#scpi-command-reference)
 - [Firmware Update](#firmware-update)
 - [Building the Firmware](#building-the-firmware)
@@ -82,6 +83,8 @@ Alternatively, use any serial terminal at 115200 baud. Type `help` for a command
 - Multi-layer hardware protection with sub-microsecond response times. See [Protection Architecture](#protection-architecture).
 - 1.47" 320x172 IPS TFT color display (ST7789V, SPI) with 4-button navigation and 6 UI screens: Dashboard, PDOs, Graph, Presets, Energy and Settings.
 - USB CDC serial interface for SCPI commands and data logging at 20 Hz.
+- Browser-based WebSerial dashboard with live readout, chart, and CSV recording (zero install).
+- Python scripting library (`pip install axxpd`) for automated test rigs and CI integration.
 - USB DFU firmware updates via `dfu` CLI command or Settings menu.
 - Programmable voltage presets stored in flash (up to 5 slots).
 - Programmable voltage sequencing with configurable step times.
@@ -200,12 +203,34 @@ Wh / Ah / elapsed time. Long-press SELECT to reset accumulators.
 6 groups with scrollable menus: Mode, Sound, Protection, Tools, Calibration, System.
 
 # WebSerial Dashboard
-A browser-based dashboard is included at [`Tools/AxxPD_Dashboard.html`](./Tools/AxxPD_Dashboard.html). Open it in Chrome or Edge 89+ and connect to AxxPD via USB-C. The dashboard provides:
+A browser-based dashboard is included at [`Tools/AxxPD_Dashboard.html`](./Tools/AxxPD_Dashboard.html). Open it in Chrome or Edge 89+ and connect to AxxPD via USB-C. No drivers or installs required. The dashboard provides:
 - Live voltage, current and power readout
 - Rolling V/I chart with hover tooltip
 - PDO selector dropdown
 - Output ON/OFF and lock controls
+- CSV recording -- click Record, run your test, click Stop, then Download CSV (20 Hz telemetry with timestamps)
 - Interactive SCPI terminal with command history
+
+## Python Library
+A Python library is available for scripted control and automation:
+```
+pip install axxpd
+```
+```python
+from axxpd import AxxPD
+
+with AxxPD() as pd:              # auto-detects the AxxPD serial port
+    pd.set_voltage(12.0)
+    pd.output_on()
+    m = pd.measure()
+    print(f"{m['voltage']:.3f} V, {m['current']:.3f} A")
+
+    for sample in pd.stream(duration=10):
+        print(sample)            # 20 Hz telemetry dicts
+
+    pd.output_off()
+```
+The library wraps every SCPI command as a Python method and supports streaming telemetry via generator or callback. Source: [`Tools/axxpd/`](./Tools/axxpd/)
 
 # SCPI Command Reference
 AxxPD has a comprehensive command interface over USB CDC serial (115200 baud) supporting both interactive shortcut commands and full SCPI. See the **[complete command reference](./Documentation/AxxPD_Command_Reference.md)** for all commands, SCPI subsystems, scripting examples and the data stream format.
@@ -302,7 +327,8 @@ AxxPD/
     etl/                 Embedded Template Library (MIT)
     Middlewares/         STM32 USB Device Library
     USB_Device/          USB CDC application layer
-  Tools/                 WebSerial dashboard
+  Tools/                 WebSerial dashboard, Python library, test scripts
+    axxpd/               Python SCPI library (pip install axxpd)
   Documentation/         Schematic, command reference, product photos
 ```
 
