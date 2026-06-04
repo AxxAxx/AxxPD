@@ -64,7 +64,7 @@ auto DPM::get_sink_pdo_list() -> PDO_LIST {
     set_snk_pdo_limits(pdo5.raw_value, PDO_LIMITS().set_mv(20000).set_ma(5000));
     sink_pdo_list.push_back(pdo5.raw_value);
 
-    // Before rev3.2, the minimum PPS voltage was 3.3 V, then updated to 5 V.
+    // PPS APDOs — minimum 3.3 V per PD spec, but many chargers only go to 5 V.
     SNK_PDO_SPR_PPS pdo6{create_pdo_variant_bits(PDO_VARIANT::APDO_PPS)};
     set_snk_pdo_limits(pdo6.raw_value,
         PDO_LIMITS().set_mv_min(5000).set_mv_max(11000).set_ma(3000));

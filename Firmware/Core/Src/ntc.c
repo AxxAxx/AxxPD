@@ -60,8 +60,9 @@ float NTC_ReadTemperature(void)
                               Caller (main.c) should treat -273.15 as "sensor fault". */
     }
     if (raw >= 4095U) {
-        return 150.0f;     /* NTC short or pullup open.  Also prevents division by zero:
-                              (NTC_VREF_ADC - raw) = 0 when raw == 4095. */
+        return -273.15f;   /* NTC short or pullup open — return sentinel so main.c
+                              treats it as sensor fault (same as ADC timeout).
+                              Also prevents division by zero: (NTC_VREF_ADC - raw) = 0. */
     }
 
     /* R_ntc from voltage divider */

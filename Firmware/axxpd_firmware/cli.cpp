@@ -568,6 +568,20 @@ static void do_reboot() {
 static void do_dfu() {
     out("entering DFU bootloader (USB / USART1 / etc.) ...\r\n");
     out("Reset MCU or power cycle to return to AxxPD firmware.\r\n");
+
+    /* Safely disable output before jumping to bootloader */
+    if (g_output_enabled) {
+        Output_Disable();
+        g_output_enabled = 0;
+    }
+
+    /* Stretch IWDG to maximum timeout (~26 seconds) so the ROM
+     * bootloader doesn't get reset mid-firmware-update. */
+    IWDG->KR  = 0x5555U;           /* unlock */
+    IWDG->PR  = 7U;                /* /256 prescaler */
+    IWDG->RLR = 0xFFFU;            /* max reload */
+    IWDG->KR  = 0xAAAAU;           /* refresh */
+
     HAL_Delay(50);
 
     // System memory bootloader base on STM32G4
@@ -925,6 +939,9 @@ static void selftest_tick() {
             return;
         }
 
+        // Suppress faults during PDO transition (inrush from voltage change)
+        g_fault_suppress_until = HAL_GetTick() + 2000U;
+
         // Issue the request. trigger_*() calls request_new_power_level()
         // internally so NEW_POWER_LEVEL is set on the next PE tick.
         switch (s.kind) {
@@ -1198,6 +1215,8 @@ static void do_protect_ocp(const char* arg) {
     if (!arg || !*arg) { err_push(-109, "Missing parameter"); return; }
     uint32_t ma = 0;
     if (!parse_numeric_unit(arg, 'A', &ma)) { err_push(-222, "bad current"); return; }
+    if (ma < 100U) { err_push(-222, "OCP minimum is 0.1A"); return; }
+    if (ma > 7000U) { err_push(-222, "OCP maximum is 7A"); return; }
     float amps = (float)ma / 1000.0f;
     INA228_SetAlertOverCurrent(&g_ina, amps);
     // Sync persistent settings so :CONF:OCP? reflects the new value
@@ -1264,6 +1283,8 @@ static void do_seq_add(char* tok[], int nt) {
         ma = static_cast<uint32_t>(strtoul(tok[2], nullptr, 10));
         dw = static_cast<uint32_t>(strtoul(tok[3], nullptr, 10));
     }
+    if (mv < 3300U || mv > 48000U) { err_push(-222, "voltage out of range (3.3-48V)"); return; }
+    if (dw == 0U) { err_push(-222, "dwell time must be > 0"); return; }
     seq_steps[seq_count] = { mv, ma, dw };
     char b[40]; snprintf(b, sizeof(b), "Step %u added\r\n", (unsigned)(seq_count + 1));
     seq_count++;

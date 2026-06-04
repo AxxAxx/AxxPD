@@ -1,6 +1,9 @@
 /**
  * @file    graph.c
  * @brief   Live V/I plot for the GRAPH UI screen.
+ */
+#include <math.h>   /* isfinite() */
+/**
  *
  * Single grid, two Y-axes: V (left, yellow), I (right, orange). 100-sample
  * rolling window with configurable sample interval: 50/100/200 ms for
@@ -433,8 +436,11 @@ void Graph_AddSample(float voltage_v, float current_a)
 {
     /* Convert float V/A to integer mV/mA for compact uint16_t storage.
      * Negative clamping is already done in INA228_ReadAll(). */
+    if (!isfinite(voltage_v) || !isfinite(current_a)) return;
     int v_mv = (int)(voltage_v * 1000.0f + 0.5f);
     int i_ma = (int)(current_a * 1000.0f + 0.5f);
+    if (v_mv < 0) v_mv = 0;
+    if (i_ma < 0) i_ma = 0;
     if (v_mv > 65535) v_mv = 65535;
     if (i_ma > 65535) i_ma = 65535;
 

@@ -520,7 +520,7 @@ static void UI_DrawDashboard(INA228_Reading_t *r, float ntc_temp, uint8_t output
         static uint8_t prev_cccv = 0; /* 0=none, 1=CV, 2=CC */
         if (output_on) {
             float neg_a = axxpd_get_negotiated_a();
-            uint8_t is_cc = (r->current_a > 0.1f && r->current_a >= neg_a * 0.90f) ? 1U : 0U;
+            uint8_t is_cc = (r->current_a > 0.1f && neg_a > 0.1f && r->current_a >= neg_a * 0.95f) ? 1U : 0U;
             uint8_t cccv = is_cc ? 2U : 1U;
             if (cccv != prev_cccv) {
                 LCD_Fill(DRAW_X + 160, CONTENT_Y + 68, DRAW_X + 195, CONTENT_Y + 86, COL_BG);
@@ -1682,6 +1682,10 @@ void UI_HandleButton(ButtonEvent_t event)
                     float a = axxpd_get_negotiated_a();
                     uint32_t mv = (uint32_t)(v * 1000.0f);
                     uint32_t ma = (uint32_t)(a * 1000.0f);
+                    if (mv < 3300U || g_hw_fault) {
+                        Buzzer_Fault();
+                        return;
+                    }
                     char name[8];
                     snprintf(name, sizeof(name), "%luV/%luA",
                              (unsigned long)(mv / 1000U),
@@ -1742,9 +1746,15 @@ void UI_HandleButton(ButtonEvent_t event)
                     /* Adjusting a numeric value */
                     switch (event) {
                     case BTN_DEC_PRESS: case BTN_DEC_REPEAT:
-                        Menu_AdjustNumeric(cur_mi, -1); return;
+                        Menu_AdjustNumeric(cur_mi, -1);
+                        if (cur_mi == MI_OCP_LIMIT)
+                            INA228_SetAlertOverCurrent(&g_ina, (float)Settings_GetOcpMa() / 1000.0f);
+                        return;
                     case BTN_INC_PRESS: case BTN_INC_REPEAT:
-                        Menu_AdjustNumeric(cur_mi, +1); return;
+                        Menu_AdjustNumeric(cur_mi, +1);
+                        if (cur_mi == MI_OCP_LIMIT)
+                            INA228_SetAlertOverCurrent(&g_ina, (float)Settings_GetOcpMa() / 1000.0f);
+                        return;
                     case BTN_SEL_PRESS: case BTN_SEL_LONG:
                         settings_adjusting_flag = 0; return;
                     default: return;

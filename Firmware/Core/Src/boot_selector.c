@@ -655,7 +655,15 @@ int BootSelector_Run(void)
         if (!user_touched) {
             uint32_t elapsed_sel = now - select_start_tick;
             if (elapsed_sel >= AUTO_SELECT_MS) {
-                /* 10 s timeout — auto-confirm the pre-selected (last-used) PDO */
+                /* 10 s timeout — auto-confirm.  For safety, if the pre-selected
+                 * PDO is >20V, fall back to PDO 0 (typically 5V) to avoid
+                 * unattended high-voltage output. */
+                {
+                    uint32_t p = pdos[cursor], t = (p >> 30) & 3, mv = 0;
+                    if (t == 0U) mv = ((p >> 10) & 0x3FF) * 50;
+                    else if (t == 3U) mv = ((p >> 17) & 0x1FF) * 100;
+                    if (mv > 20000U) cursor = 0U;
+                }
                 s_selected_pdo = pdos[cursor];
                 {
                     uint32_t p = pdos[cursor], t = (p>>30)&3, mv = 0;

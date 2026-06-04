@@ -100,7 +100,28 @@ void Buzzer_Off(void)
 /* Named presets — duration in ms, timer handles exact cycle count */
 void Buzzer_Click(void)    { Buzzer_Beep(BUZZER_BASE_HZ, 10);  }
 void Buzzer_Confirm(void)  { Buzzer_Beep(BUZZER_BASE_HZ, 20);  }
-void Buzzer_Fault(void)    { Buzzer_Beep(BUZZER_BASE_HZ, 320); }
+void Buzzer_Fault(void)    {
+    /* Always play fault tone regardless of buzzer setting — safety critical */
+    if (s_htim == NULL || BUZZER_BASE_HZ == 0U) return;
+    GPIO_InitTypeDef gpio = {0};
+    gpio.Pin = GPIO_PIN_15;
+    gpio.Mode = GPIO_MODE_AF_PP;
+    gpio.Pull = GPIO_NOPULL;
+    gpio.Speed = GPIO_SPEED_FREQ_LOW;
+    gpio.Alternate = GPIO_AF2_TIM8;
+    HAL_GPIO_Init(GPIOA, &gpio);
+    HAL_TIM_PWM_Stop(s_htim, TIM_CHANNEL_1);
+    s_htim->Instance->CR1 &= ~TIM_CR1_OPM;
+    uint32_t arr = (SystemCoreClock / BUZZER_BASE_HZ) - 1U;
+    __HAL_TIM_SET_AUTORELOAD(s_htim, arr);
+    __HAL_TIM_SET_COMPARE(s_htim, TIM_CHANNEL_1, arr / 2U);
+    uint32_t rep = ((uint32_t)BUZZER_BASE_HZ * 320U) / 1000U;
+    if (rep == 0U) rep = 1U;
+    s_htim->Instance->RCR = (uint16_t)(rep - 1U);
+    s_htim->Instance->CR1 |= TIM_CR1_OPM;
+    __HAL_TIM_SET_COUNTER(s_htim, 0);
+    HAL_TIM_PWM_Start(s_htim, TIM_CHANNEL_1);
+}
 void Buzzer_Enable(void)   { Buzzer_Beep(1200U, 60);  }  /* high chirp for ON */
 void Buzzer_Disable(void)  { Buzzer_Beep(BUZZER_BASE_HZ, 120); }
 void Buzzer_Warn(void)     { Buzzer_Beep(BUZZER_BASE_HZ, 20);  }

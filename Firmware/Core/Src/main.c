@@ -82,9 +82,13 @@ volatile uint32_t g_fault_suppress_until = 0;
 volatile uint8_t  g_usb_initialized = 0;
 
 /* --- OCP retry state machine --- */
-static uint8_t  ocp_retry_count   = 0;    /* retries attempted so far */
-static uint32_t ocp_retry_tick    = 0;    /* tick when last OCP trip occurred */
-static uint8_t  ocp_retry_pending = 0;    /* 1 = waiting to re-enable output */
+static volatile uint8_t  ocp_retry_count   = 0;    /* retries attempted so far */
+static volatile uint32_t ocp_retry_tick    = 0;    /* tick when last OCP trip occurred */
+static volatile uint8_t  ocp_retry_pending = 0;    /* 1 = waiting to re-enable output */
+
+/* --- Output toggle cooldown (MOSFET thermal protection) --- */
+static uint32_t g_output_enable_tick = 0; /* tick of last Output_Enable() call */
+#define OUTPUT_TOGGLE_COOLDOWN_MS 1500U   /* min interval between enable events */
 static uint8_t    g_boot_pdo = 0;
 
 /* Deferred EPR entry — non-blocking, runs in the main loop.
@@ -292,7 +296,9 @@ int main(void)
   if (Settings_GetRememberBoot() && g_boot_pdo == 0) {
       uint32_t lv = Settings_GetLastVoltage();
       uint32_t la = Settings_GetLastCurrent();
-      if (lv >= 3300 && lv <= 48000) {
+      /* Only auto-enable if the saved voltage is within range AND we
+       * have an active PD contract (charger is present and negotiated). */
+      if (lv >= 3300 && lv <= 48000 && axxpd_get_active_pdo_index() > 0) {
           axxpd_request_voltage(lv, la);
           Output_Enable();
           g_output_enabled = 1;
@@ -312,6 +318,8 @@ int main(void)
   IWDG->PR  = 4U;         /* /64 prescaler */
   IWDG->RLR = 2500U;      /* 2500 * (64/32000) = 5.0 s */
   IWDG->KR  = 0xCCCCU;   /* start */
+
+  uint32_t boot_tick = HAL_GetTick(); /* overflow-safe reference for EPR boot */
 
   while (1)
   {
@@ -347,6 +355,13 @@ int main(void)
       axxpd_run();
       axxpd_ensure_contract_flag();  /* repair after hard resets */
 
+      /* Charger disconnect detection — if output is enabled but PD
+       * contract is lost (charger unplugged), disable output. */
+      if (g_output_enabled && !g_hw_fault && axxpd_get_active_pdo_index() == 0) {
+          Output_Disable();
+          g_output_enabled = 0;
+      }
+
       /* Tool state machines (selftest, voltage sweep) — need fast ticking */
       UI_ToolTick(&g_ina_reading);
 
@@ -360,12 +375,12 @@ int main(void)
       if (g_epr_boot_phase < 2) {
           if (axxpd_is_epr_active()) {
               g_epr_boot_phase = 2;
-          } else if (g_epr_boot_phase == 0 && now >= 3000U
+          } else if (g_epr_boot_phase == 0 && (now - boot_tick) >= 3000U
                      && axxpd_is_src_epr_capable()) {
               /* Single retry at 3s if boot_selector's 1s attempt failed */
               axxpd_enable_epr();
               g_epr_boot_phase = 1;
-          } else if (now >= 5000U) {
+          } else if ((now - boot_tick) >= 5000U) {
               g_epr_boot_phase = 2;
               axxpd_disable_epr_intent();
               axxpd_ensure_contract_flag();
@@ -539,12 +554,51 @@ int main(void)
       }
 
       /* OCP retry: after inrush trip, wait 200ms then re-enable output.
-       * If it trips again within 500ms, it's a real fault → latch off. */
+       * If it trips again within 500ms, it's a real fault → latch off.
+       * We re-enable manually here instead of calling Output_Enable()
+       * because Output_Enable() resets ocp_retry_count and the fault
+       * suppression window — that would defeat the retry counter. */
       if (ocp_retry_pending && !g_hw_fault && (int32_t)(now - ocp_retry_tick) >= 200) {
           ocp_retry_pending = 0;
           ocp_retry_count++;
-          g_fault_suppress_until = now + 500U;  /* suppress during re-enable */
-          Output_Enable();
+          INA228_ClearAlertLatch(&g_ina);
+          g_fault_suppress_until = now + 500U;
+          cc_low_since = 0;
+          HAL_GPIO_WritePin(BLEED_CTRL_GPIO_Port, BLEED_CTRL_Pin, GPIO_PIN_RESET);
+          HAL_GPIO_WritePin(LTC4368_SHDN_GPIO_Port, LTC4368_SHDN_Pin, GPIO_PIN_SET);
+          g_output_enabled = 1;
+          if (Settings_GetTimerSeconds() > 0) Timer_Start();
+      }
+
+      /* Post-suppression fault pin poll — EXTI is edge-triggered, so if
+       * LTC4368_FLT, INA228_ALERT or COMP1 OVP was already asserted when
+       * the suppression window expired, no new interrupt fires.  Poll in
+       * a 200ms window after the suppression closes to catch faults from
+       * e.g. turning on into a dead short or a sustained OVP. */
+      if (g_output_enabled && !g_hw_fault &&
+          (int32_t)(g_fault_suppress_until - now) <= 0 &&
+          (int32_t)(now - g_fault_suppress_until) < 200U) {
+          if (HAL_GPIO_ReadPin(LTC4368_FLT_GPIO_Port, LTC4368_FLT_Pin) == GPIO_PIN_RESET) {
+              g_hw_fault = 1;
+              g_fault_source = FAULT_LTC4368;
+              Output_Disable_ISR();
+              g_fault_pending_beep = 1;
+              FaultLog_Push(FAULT_LTC4368, 0, 0);
+          } else if (HAL_GPIO_ReadPin(INA228_ALERT_GPIO_Port, INA228_ALERT_Pin) == GPIO_PIN_RESET) {
+              g_hw_fault = 1;
+              g_fault_source = FAULT_INA228_OCP;
+              Output_Disable_ISR();
+              g_fault_pending_beep = 1;
+              FaultLog_Push(FAULT_INA228_OCP, 0, 0);
+          } else if (HAL_COMP_GetOutputLevel(&hcomp1) == COMP_OUTPUT_LEVEL_HIGH) {
+              g_hw_fault = 1;
+              g_fault_source = FAULT_COMP_OVP;
+              Output_Disable_ISR();
+              g_fault_pending_beep = 1;
+              FaultLog_Push(FAULT_COMP_OVP,
+                            (uint16_t)(g_ina_reading.voltage_v * 1000.0f),
+                            (uint16_t)(g_ina_reading.current_a * 1000.0f));
+          }
       }
 
       /* Button event processing */
@@ -555,17 +609,13 @@ int main(void)
               && ev != BTN_INC_REPEAT && ev != BTN_DEC_REPEAT) {
               Buzzer_Click();
           }
-          if (ev == BTN_PWR_LONG && !UI_IsLocked()) {
-              /* Don't clear thermal fault while still hot */
-              if (g_fault_source == FAULT_THERMAL && g_ntc_temp >= THERMAL_COOLDOWN_C) {
-                  Buzzer_Fault();
-              } else {
-                  g_output_enabled = 0;
-                  Output_Disable();
-                  g_hw_fault = 0; g_fault_source = FAULT_NONE;
-                  INA228_ClearAlertLatch(&g_ina);
-                  Buzzer_Disable();
-              }
+          if ((ev == BTN_PWR_LONG || ev == BTN_PWR_SHORT) && g_hw_fault) {
+              /* Fault active — only SELECT can clear it */
+              Buzzer_Fault();
+          } else if (ev == BTN_PWR_LONG && !UI_IsLocked()) {
+              g_output_enabled = 0;
+              Output_Disable();
+              Buzzer_Disable();
           } else if (ev == BTN_PWR_SHORT && !UI_IsLocked()) {
               if (UI_WantsPwrShort()) {
                   UI_HandleButton(ev);
@@ -575,6 +625,11 @@ int main(void)
                       /* Still too hot — don't allow re-enable */
                       Buzzer_Fault();
                   } else if (!g_output_enabled && UI_GetScreen() == UI_SCREEN_SETTINGS) {
+                      Buzzer_Fault();
+                  } else if (!g_output_enabled &&
+                             (int32_t)(HAL_GetTick() - g_output_enable_tick) < (int32_t)OUTPUT_TOGGLE_COOLDOWN_MS) {
+                      /* Too soon after last enable — protect MOSFETs from
+                       * thermal stress caused by repeated gate ramp cycles */
                       Buzzer_Fault();
                   } else {
                       __disable_irq();
@@ -1381,6 +1436,7 @@ void Output_Enable(void) {
     HAL_GPIO_Init(LTC4368_SHDN_GPIO_Port, &gpio);
     HAL_GPIO_WritePin(LTC4368_SHDN_GPIO_Port, LTC4368_SHDN_Pin, GPIO_PIN_SET);
     g_output_enabled = 1;
+    g_output_enable_tick = HAL_GetTick();
     if (Settings_GetTimerSeconds() > 0) Timer_Start();
 }
 
@@ -1475,8 +1531,11 @@ void HAL_GPIO_EXTI_Callback(uint16_t GPIO_Pin) {
             }
 
             if (ocp_retry_count < allowed) {
-                /* Inrush likely — disable output, schedule retry in main loop */
-                Output_Disable_ISR();
+                /* Inrush likely — cut SHDN but keep bleed OFF so output caps
+                 * stay charged.  This way the retry re-enable sees a smaller
+                 * voltage delta to the load, reducing inrush on the next try. */
+                HAL_GPIO_WritePin(LTC4368_SHDN_GPIO_Port, LTC4368_SHDN_Pin, GPIO_PIN_RESET);
+                g_output_enabled = 0;
                 ocp_retry_tick = now;
                 ocp_retry_pending = 1;
                 /* Don't set g_hw_fault — no error screen yet */
@@ -1496,11 +1555,29 @@ void HAL_GPIO_EXTI_Callback(uint16_t GPIO_Pin) {
 
     if (GPIO_Pin == INA228_ALERT_Pin) {
         if (g_output_enabled && !g_hw_fault) {
-            g_hw_fault = 1;
-            g_fault_source = FAULT_INA228_OCP;
-            Output_Disable_ISR();
-            g_fault_pending_beep = 1;
-            FaultLog_Push(FAULT_INA228_OCP, 0, 0);
+            uint8_t max_retries = Settings_GetOcpRetry();
+            uint8_t allowed = (max_retries == 0) ? 0
+                            : (max_retries == 1) ? 1 : 3;
+            uint32_t now = HAL_GetTick();
+
+            if (ocp_retry_count > 0 && (now - ocp_retry_tick) > 500U) {
+                ocp_retry_count = 0;
+            }
+
+            if (ocp_retry_count < allowed) {
+                HAL_GPIO_WritePin(LTC4368_SHDN_GPIO_Port, LTC4368_SHDN_Pin, GPIO_PIN_RESET);
+                g_output_enabled = 0;
+                ocp_retry_tick = now;
+                ocp_retry_pending = 1;
+            } else {
+                g_hw_fault = 1;
+                g_fault_source = FAULT_INA228_OCP;
+                Output_Disable_ISR();
+                g_fault_pending_beep = 1;
+                ocp_retry_count = 0;
+                ocp_retry_pending = 0;
+                FaultLog_Push(FAULT_INA228_OCP, 0, 0);
+            }
         }
     }
     else if (GPIO_Pin == LM5166_FGOOD_Pin) {
@@ -1525,6 +1602,8 @@ void HAL_GPIO_EXTI_Callback(uint16_t GPIO_Pin) {
  * Fault log — ring buffer
  * ---------------------------------------------------------------------------*/
 void FaultLog_Push(uint8_t source, uint16_t mv, uint16_t ma) {
+    uint32_t primask = __get_PRIMASK();
+    __disable_irq();
     uint8_t idx = g_fault_log_head;
     g_fault_log[idx].tick = HAL_GetTick();
     g_fault_log[idx].source = source;
@@ -1532,6 +1611,7 @@ void FaultLog_Push(uint8_t source, uint16_t mv, uint16_t ma) {
     g_fault_log[idx].current_ma = ma;
     g_fault_log_head = (idx + 1) % FAULT_LOG_SIZE;
     if (g_fault_log_count < FAULT_LOG_SIZE) g_fault_log_count++;
+    __set_PRIMASK(primask);
 }
 
 FaultLog_t* FaultLog_Get(uint8_t index) {

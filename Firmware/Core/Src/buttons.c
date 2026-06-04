@@ -35,6 +35,7 @@ extern volatile uint32_t g_fault_suppress_until;  /* HAL_GetTick() deadline — 
 #define LONG_PRESS_TICKS      120U  /* 600ms — threshold for PWR/SEL long-press */
 #define REPEAT_INIT_TICKS     60U   /* 300ms — hold delay before first auto-repeat (INC/DEC) */
 #define REPEAT_INTERVAL_TICKS 16U   /* 80ms  — interval between subsequent repeats */
+#define MAX_HOLD_TICKS        2000U /* 10s   — stop repeats after 10s (stuck button protection) */
 
 /* -------------------------------------------------------------------------
  * Per-button state machine
@@ -192,8 +193,8 @@ void Buttons_Tick(void)
             if (!high) {
                 /* Released — no additional event */
                 b->state = ST_IDLE;
-            } else if (b->ev_repeat != BTN_NONE) {
-                /* Auto-repeat mode (INC/DEC) */
+            } else if (b->ev_repeat != BTN_NONE && b->hold_ticks < MAX_HOLD_TICKS) {
+                /* Auto-repeat mode (INC/DEC), stop after MAX_HOLD_TICKS */
                 if (++b->ticks >= REPEAT_INTERVAL_TICKS) {
                     b->ticks = 0U;
                     evt_push(b->ev_repeat);

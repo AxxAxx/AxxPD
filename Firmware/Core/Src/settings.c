@@ -145,7 +145,7 @@ void Settings_LoadDefaults(void)
     settings.wh_limit_mwh  = 0;     /* disabled */
     settings.charge_complete_ma  = 0;   /* disabled by default */
     settings.charge_complete_sec = 30;  /* 30 seconds hold time */
-    settings.ocp_retry     = 0;     /* latch (no retry) */
+    settings.ocp_retry     = 2;     /* retry 3x (handles hot-plug inrush) */
 
     /* Calibration offsets — zero by default (no adjustment) */
     settings.cal_v_offset_uv = 0;

@@ -282,10 +282,16 @@ static float mavg_feed(mavg_t *f, float sample)
     f->sum -= f->buf[f->idx];   /* subtract oldest sample being evicted */
     f->buf[f->idx] = sample;
     f->sum += sample;            /* add new sample                      */
-    /* Clamp: float subtraction can drift sum to -1e-9; force non-negative */
-    if (f->sum < 0.0f) f->sum = 0.0f;
     f->idx = (f->idx + 1U) % MAVG_N;
     if (f->filled < MAVG_N) f->filled++;
+    /* Every full rotation, recalculate sum from scratch to eliminate
+     * accumulated float subtraction drift (~50-100mV over 24 hours). */
+    if (f->idx == 0U && f->filled == MAVG_N) {
+        float s = 0.0f;
+        for (uint8_t i = 0; i < MAVG_N; i++) s += f->buf[i];
+        f->sum = s;
+    }
+    if (f->sum < 0.0f) f->sum = 0.0f;
     return f->sum / (float)f->filled;  /* mean of valid samples */
 }
 
