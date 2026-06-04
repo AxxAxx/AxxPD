@@ -18,6 +18,3 @@ Firmware/build/
 Thumbs.db
 .DS_Store
 desktop.ini
-
-# Claude Code
-.claude/
