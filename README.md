@@ -9,9 +9,9 @@ On [Crowd Supply](https://www.crowdsupply.com/) you can back the AxxPD campaign 
 # AxxPD Overview
 AxxPD is a programmable USB-C PD 3.1 EPR sink that lets you use any USB-C PD charger as a bench power supply. It negotiates the best available voltage from the charger -- anywhere from 3.3 V to 48 V and up to 240 W depending on what the charger supports -- and delivers power through XT30 and 4 mm shrouded banana jack outputs.
 
-Designed for lab and field use by embedded developers, ham radio operators, RC/drone hobbyists and electronics enthusiasts. AxxPD features 20-bit precision measurement, multi-layer hardware protection, a 1.47" IPS color display with 6 UI screens, SCPI automation over USB, and a CNC aluminum enclosure with magnetic mount.
+Designed for lab and field use by embedded developers, ham radio operators, RC/drone hobbyists and electronics enthusiasts. AxxPD features 20-bit precision measurement, multi-layer hardware protection, a 1.47" IPS color display with 6 UI screens, SCPI automation over USB, and a CNC milled aluminum enclosure with magnetic mount.
 
-The firmware is written for the [STM32G491CCU6](https://www.st.com/en/microcontrollers-microprocessors/stm32g491ce.html) in C/C++17 and is open source under the GPL-3.0 license.
+The firmware is written for the [STM32G491CCU6](https://www.st.com/en/microcontrollers-microprocessors/stm32g491ce.html) in C/C++ and is open source under the GPL-3.0 license.
 
 ![AxxPD](./Documentation/photos/AxxPD.jpg)
 
