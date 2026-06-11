@@ -348,7 +348,8 @@ int16_t CDC_RxGetByte(void)
 
 /**
   * @brief  Blocking CDC transmit with timeout.
-  *         Waits for any previous TX to finish, then sends data.
+  *         Waits for any previous TX to finish, sends data, then waits for
+  *         this transfer to complete before returning.
   * @param  Buf: Buffer of data to send
   * @param  Len: Number of bytes
   * @param  timeout_ms: Max wait time in milliseconds
@@ -357,6 +358,7 @@ int16_t CDC_RxGetByte(void)
 uint8_t CDC_Transmit_Blocking(const uint8_t* Buf, uint16_t Len, uint32_t timeout_ms)
 {
   uint32_t start = HAL_GetTick();
+  uint8_t result;
   USBD_CDC_HandleTypeDef *hcdc = (USBD_CDC_HandleTypeDef*)hUsbDeviceFS.pClassData;
   if (hcdc == NULL) return USBD_FAIL;
 
@@ -366,7 +368,18 @@ uint8_t CDC_Transmit_Blocking(const uint8_t* Buf, uint16_t Len, uint32_t timeout
   }
 
   USBD_CDC_SetTxBuffer(&hUsbDeviceFS, (uint8_t*)Buf, Len);
-  return USBD_CDC_TransmitPacket(&hUsbDeviceFS);
+  result = USBD_CDC_TransmitPacket(&hUsbDeviceFS);
+  if (result != USBD_OK) return result;
+
+  /* Wait for THIS transfer to complete before returning.  Callers pass
+   * stack buffers; for transfers > 64 bytes the USB IRQ keeps reading from
+   * Buf packet-by-packet after USBD_CDC_TransmitPacket() returns, so
+   * returning early lets the buffer go out of scope while the endpoint is
+   * still reading it (use-after-free). Same timeout budget as above. */
+  while (hcdc->TxState != 0) {
+    if ((HAL_GetTick() - start) >= timeout_ms) return USBD_BUSY;
+  }
+  return USBD_OK;
 }
 
 /* USER CODE END PRIVATE_FUNCTIONS_IMPLEMENTATION */

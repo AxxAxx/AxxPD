@@ -53,6 +53,18 @@ static uint32_t settings_save_deferred_tick = 0;     /* tick when deferral start
  * settings if the device runs on EPR for hours and then loses power.      */
 #define SETTINGS_DEFERRED_TIMEOUT_MS  10000U
 
+/* Coalescing for rapid UI adjustments (INC/DEC with 12.5 Hz auto-repeat):
+ * each step only marks the RAM mirror dirty; the flash write happens once
+ * the user has stopped adjusting for SETTINGS_ADJUST_IDLE_MS, or after
+ * SETTINGS_ADJUST_FORCE_MS of continuous adjusting as a last resort.
+ * This avoids a full page erase+program (flash wear + multi-ms stall)
+ * on every single button event.                                          */
+static volatile uint8_t settings_adjust_dirty = 0;   /* 1 = coalesced save pending */
+static uint32_t settings_adjust_last_tick  = 0;      /* tick of most recent adjustment */
+static uint32_t settings_adjust_first_tick = 0;      /* tick when dirty period started */
+#define SETTINGS_ADJUST_IDLE_MS    2000U
+#define SETTINGS_ADJUST_FORCE_MS  10000U
+
 /* Backing buffer for flash writes (settings + CRC, doubleword-aligned).
  * Must be 8-byte aligned for HAL_FLASH_Program(DOUBLEWORD, ...).         */
 static uint8_t write_buf[TOTAL_WRITE_SIZE] __attribute__((aligned(8)));
@@ -261,6 +273,7 @@ static void settings_do_flash_write(void)
 
     HAL_FLASH_Lock();
     settings_save_pending = 0;
+    settings_adjust_dirty = 0;   /* full struct just persisted — coalesced save no longer needed */
 }
 
 /**
@@ -294,12 +307,43 @@ void Settings_SaveImmediate(void)
 }
 
 /**
+ * Mark the RAM mirror dirty without writing flash.  Used by rapid UI
+ * adjustments (INC/DEC steps, bool toggles) so consecutive changes are
+ * coalesced into a single erase+program cycle.  The actual write is
+ * committed by Settings_ProcessDeferred() once the user has been idle
+ * for SETTINGS_ADJUST_IDLE_MS (or after SETTINGS_ADJUST_FORCE_MS at most).
+ * Note: only flash persistence is deferred — callers that must apply a
+ * value to hardware immediately (OCP/OVP thresholds) do so themselves.
+ */
+void Settings_SaveDeferred(void)
+{
+    uint32_t now = HAL_GetTick();
+    if (!settings_adjust_dirty) {
+        settings_adjust_dirty = 1;
+        settings_adjust_first_tick = now;
+    }
+    settings_adjust_last_tick = now;
+}
+
+/**
  * Called from the main super-loop.  Commits any deferred save when it is
  * safe to do so (EPR no longer active), or forces the write after 10 s
  * to avoid losing settings on an unexpected power loss.
  */
 void Settings_ProcessDeferred(void)
 {
+    /* Coalesced UI adjustments: commit once the user has stopped adjusting,
+     * or force the commit if they have been adjusting continuously for too
+     * long.  Goes through Settings_Save() so the EPR deferral still applies. */
+    if (settings_adjust_dirty) {
+        uint32_t now = HAL_GetTick();
+        if ((now - settings_adjust_last_tick)  >= SETTINGS_ADJUST_IDLE_MS ||
+            (now - settings_adjust_first_tick) >= SETTINGS_ADJUST_FORCE_MS) {
+            settings_adjust_dirty = 0;
+            Settings_Save();
+        }
+    }
+
     if (!settings_save_pending) return;
 
     /* Best case: EPR dropped since the save was requested — write now */
@@ -574,5 +618,5 @@ void Settings_SetNumeric(uint16_t mi, int32_t delta)
         default:
             return;
     }
-    Settings_Save();
+    Settings_SaveDeferred();  /* coalesce rapid INC/DEC steps into one flash write */
 }

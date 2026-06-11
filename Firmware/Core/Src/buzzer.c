@@ -64,7 +64,7 @@ void Buzzer_Beep(uint16_t freq_hz, uint16_t duration_ms)
     /* Number of PWM cycles for requested duration */
     uint32_t cycles = ((uint32_t)freq_hz * (uint32_t)duration_ms + 500U) / 1000U;
     if (cycles < 1U) cycles = 1U;
-    if (cycles > 256U) cycles = 256U;  /* RCR is 16-bit on TIM8, clamped to 256 for reasonable durations */
+    if (cycles > 65536U) cycles = 65536U;  /* RCR is 16-bit on TIM8: max 65536 cycles (RCR = cycles-1) */
 
     __HAL_TIM_SET_AUTORELOAD(s_htim, period - 1U);
     __HAL_TIM_SET_COMPARE(s_htim, TIM_CHANNEL_1, period / 2U);

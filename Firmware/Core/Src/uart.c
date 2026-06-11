@@ -96,8 +96,12 @@ uint16_t UART_GetLine(char *buf, uint16_t max_len)
     /* Advance read index to the other buffer for next call */
     s_read_idx = 1U - idx;
 
-    /* If ISR had stopped because both buffers were full, re-arm now */
+    /* If ISR had stopped because both buffers were full, resume reception
+     * into the buffer we just freed — the other buffer still holds an
+     * unconsumed ready line and must not receive new bytes. Safe to touch
+     * s_rx_active here: RX is stopped, so no RX interrupt can fire. */
     if (s_huart->RxState == HAL_UART_STATE_READY) {
+        s_rx_active = idx;
         UART_RearmRx();
     }
 

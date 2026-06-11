@@ -166,6 +166,7 @@ static void ui_draw_scrollbar(uint8_t total, uint8_t visible,
 
 /* Defined in main.c */
 extern void App_SetTargetVoltage(uint32_t mv, uint32_t ma);
+extern void OVP_SetThreshold(uint32_t vbus_max_mv);
 extern volatile uint8_t g_hw_fault;       /* set by HW fault ISR, cleared by UI ack */
 extern volatile uint8_t g_fault_source;   /* sequential fault code: FAULT_COMP_OVP, FAULT_LTC4368, etc. */
 extern volatile uint8_t g_output_enabled;
@@ -1808,11 +1809,15 @@ void UI_HandleButton(ButtonEvent_t event)
                         Menu_AdjustNumeric(cur_mi, -1);
                         if (cur_mi == MI_OCP_LIMIT)
                             INA228_SetAlertOverCurrent(&g_ina, (float)Settings_GetOcpMa() / 1000.0f);
+                        if (cur_mi == MI_OVP_LIMIT)
+                            OVP_SetThreshold(Settings_GetOvpMv());
                         return;
                     case BTN_INC_PRESS: case BTN_INC_REPEAT:
                         Menu_AdjustNumeric(cur_mi, +1);
                         if (cur_mi == MI_OCP_LIMIT)
                             INA228_SetAlertOverCurrent(&g_ina, (float)Settings_GetOcpMa() / 1000.0f);
+                        if (cur_mi == MI_OVP_LIMIT)
+                            OVP_SetThreshold(Settings_GetOvpMv());
                         return;
                     case BTN_SEL_PRESS: case BTN_SEL_LONG:
                         settings_adjusting_flag = 0; return;

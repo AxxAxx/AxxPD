@@ -119,6 +119,7 @@ typedef struct {
 void     Settings_Init(void);
 void     Settings_Save(void);
 void     Settings_SaveImmediate(void);   /* blocking write; use just before reboot */
+void     Settings_SaveDeferred(void);    /* mark dirty; coalesced write ~2s after last change */
 
 /* Deferred save — flash erase stalls the CPU for ~50-100ms, which kills
  * EPR KeepAlive (500ms deadline).  Call Settings_ProcessDeferred() from

@@ -397,9 +397,13 @@ int main(void)
   HAL_COMP_Start(&hcomp1);
 
   /* --- OCP hardware setup (apply saved INA228 alert threshold) --- */
-  /* NOTE: OCP from settings is applied after boot via CLI 'protect ocp'
-   * or manually. Auto-apply at boot is disabled because stale flash
-   * values with wrong shunt calibration can cause false OCP trips. */
+  /* Arm the ALERT-pin backup OCP layer: INA228_Init's soft reset left the
+   * SOVL register at the chip default, so program the saved threshold now.
+   * Same call pattern as the settings menu and CLI 'protect ocp'. */
+  {
+      uint16_t ocp_ma = Settings_GetOcpMa();
+      INA228_SetAlertOverCurrent(&g_ina, (float)(ocp_ma > 0 ? ocp_ma : 5500) / 1000.0f);
+  }
 
   /* --- Display splash (gated by Splash Screen setting) --- */
   LCD_init();
@@ -875,9 +879,12 @@ int main(void)
               if (UI_WantsPwrShort()) {
                   UI_HandleButton(ev);
               } else {
-                  if (!g_output_enabled && g_fault_source == FAULT_THERMAL
-                      && g_ntc_temp >= THERMAL_COOLDOWN_C) {
-                      /* Still too hot — don't allow re-enable */
+                  if (!g_output_enabled && g_ntc_temp >= THERMAL_COOLDOWN_C) {
+                      /* Still too hot — don't allow re-enable until the board
+                       * has cooled below the cooldown threshold. Checked on
+                       * temperature alone (not fault bookkeeping): clearing a
+                       * thermal fault also resets g_fault_source, and an
+                       * unplugged NTC reads -273 so it never blocks here. */
                       Buzzer_Fault();
                   } else if (!g_output_enabled && UI_GetScreen() == UI_SCREEN_SETTINGS) {
                       /* Can't arm the output from the settings screen — give the
@@ -925,7 +932,7 @@ int main(void)
       /* Deferred fault beep */
       if (g_fault_pending_beep) {
           g_fault_pending_beep = 0;
-          Buzzer_Beep(2000, 200);  /* 2kHz, 200ms fault beep */
+          Buzzer_Fault();  /* 2kHz fault tone — bypasses the buzzer setting (safety critical) */
       }
 
       /* Timer auto-shutoff */

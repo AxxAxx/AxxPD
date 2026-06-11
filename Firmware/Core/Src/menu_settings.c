@@ -221,7 +221,7 @@ void Menu_ToggleBool(uint16_t mi)
 
     uint8_t val = Settings_GetBool(entry->fi);
     Settings_SetBool(entry->fi, val ? 0U : 1U);
-    Settings_Save();  /* persist immediately (deferred if EPR active) */
+    Settings_SaveDeferred();  /* coalesce rapid toggles into one flash write */
 }
 
 /** Increment (+1) or decrement (-1) a numeric setting by one step. */

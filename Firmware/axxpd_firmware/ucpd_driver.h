@@ -11,6 +11,7 @@
 #include <cstring>
 #include "pd/idriver.h"
 #include "pd/port.h"
+#include "pd/utils/spsc_overwrite_queue.h"
 #include "stm32g4xx_ll_ucpd.h"
 #include "stm32g4xx_ll_dma.h"
 #include "stm32g4xx_ll_bus.h"
@@ -81,19 +82,18 @@ private:
     pd::TCPC_CC_LEVEL::Type cc2_level_ = pd::TCPC_CC_LEVEL::NONE;
     volatile bool cc_scan_done_ = false;   // written by ISR (typec_event), read by main loop
 
-    // RX buffer (DMA target)
+    // RX DMA staging size (file-static dma_buf_ in ucpd_driver.cpp).
     // 272 B so chunked extended messages (EPR_Source_Capabilities arrives as
     // ≤30-byte chunks) have comfortable headroom. Previous 30 B was exactly
     // at the chunk limit and risked silent overrun.
     static constexpr size_t RX_BUF_SIZE = 272;
-    uint8_t rx_buf_[RX_BUF_SIZE] __attribute__((aligned(4)));
-    volatile bool rx_msg_pending_ = false;
-    // rx_ordset_ and rx_size_ are written in ISR (irq_handle_rxmsgend) and
-    // read in main loop (fetch_rx_data). The paired rx_msg_pending_ flag
-    // is set LAST in the ISR, so a release/acquire pattern holds with
-    // GCC on Cortex-M — volatile here guards against future optimisations.
-    volatile uint32_t rx_ordset_ = 0;
-    volatile uint16_t rx_size_ = 0;
+    // RX queue: the ISR (single producer) pushes decoded SOP messages,
+    // fetch_rx_data() (single consumer, PRL task tick) pops them. Replaces
+    // the old single rx_buf_ slot, which the ISR could overwrite mid-copy
+    // (tearing) and which silently dropped back-to-back messages that were
+    // already GoodCRC-acknowledged. Depth 4 matches pdsink's FUSB302 driver.
+    spsc_overwrite_queue<pd::PD_CHUNK, 4> rx_queue_{};
+    volatile uint32_t rx_ordset_ = 0;   // last forwarded ordered set (debug only)
 
     // TX buffer (DMA source, persists until TX complete)
     uint8_t tx_buf_[30] __attribute__((aligned(4)));
@@ -101,6 +101,15 @@ private:
     // TX state
     volatile bool tx_done_ = false;
     volatile bool tx_success_ = false;
+
+    // Software GoodCRC verification for PRL TX. The G4 UCPD is a raw PHY:
+    // TXMSGSENT only means "transmitted", NOT "acknowledged". TXMSGSENT arms
+    // this state; a matching SOP GoodCRC in irq_handle_rxmsgend() reports
+    // SUCCEEDED; fetch_rx_data() reports FAILED once tReceive expires so the
+    // PRL retry machinery fires.
+    volatile bool tx_awaiting_goodcrc_ = false;
+    volatile uint8_t tx_goodcrc_msg_id_ = 0;
+    volatile uint32_t tx_goodcrc_deadline_ = 0;   // HAL tick
 
     // RX enabled guard — prevents DMA restarts while already running.
     // Written from both ISR and main contexts.

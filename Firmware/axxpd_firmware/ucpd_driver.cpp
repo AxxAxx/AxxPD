@@ -24,7 +24,7 @@
 volatile uint8_t  g_stream_enabled = 0;
 volatile uint32_t g_stream_interval_ms = 50;  // default 20 Hz; settable via CLI
 
-// Double-buffer for RX DMA: DMA writes to dma_buf_, ISR copies to rx_buf_.
+// Staging buffer for RX DMA: DMA writes to dma_buf_, ISR pushes to rx_queue_.
 // Size must match UcpdDriver::RX_BUF_SIZE (272 B) so chunked extended
 // messages (EPR_Source_Capabilities, up to 30 B per chunk on-wire) fit
 // with headroom.
@@ -130,8 +130,10 @@ void UcpdDriver::error_recovery() {
     goodcrc_tx_pending_ = false;
     cable_goodcrc_tx_pending_ = false;
     cable_response_tx_pending_ = false;
-    rx_msg_pending_ = false;
+    tx_awaiting_goodcrc_ = false;
     sop1_deferred_pending_ = false;
+    // RX is disabled above, so the ISR (producer) cannot push concurrently.
+    rx_queue_.clear_from_producer();
 
     // 2. Wait tErrorRecovery.  Spec minimum is 25 ms; we use 200 ms
     //    because some chargers need a longer CC-absent window to fully
@@ -294,34 +296,36 @@ void UcpdDriver::req_rx_enable(bool enable) {
 bool UcpdDriver::is_rx_enable_done() { return true; }
 
 bool UcpdDriver::fetch_rx_data() {
-    if (!rx_msg_pending_) return false;
-    rx_msg_pending_ = false;
-
-    // Copy received bytes into port.rx_chunk
-    auto& chunk = port_.rx_chunk;
-    chunk.clear();
-
-    if (rx_size_ >= 2) {
-        // First 2 bytes = PD header (little-endian)
-        chunk.header.raw_value = static_cast<uint16_t>(rx_buf_[0] | (rx_buf_[1] << 8));
-
-        // Remaining bytes = data objects payload
-        uint16_t payload_bytes = rx_size_ - 2;
-        auto& buf = chunk.get_data();
-        for (uint16_t i = 0; i < payload_bytes && buf.available() > 0; ++i) {
-            buf.push_back(rx_buf_[2 + i]);
+    // Software GoodCRC timeout (tReceive ~1.1 ms). Polled here because the
+    // PRL calls fetch_rx_data() on every task tick (1 ms SysTick + main
+    // loop). If the partner's GoodCRC never arrived for the last TX, report
+    // FAILED so the PRL retry machinery (nRetryCount) fires. The CAS
+    // resolves the race against the ISR reporting SUCCEEDED concurrently.
+    if (tx_awaiting_goodcrc_ &&
+        (int32_t)(HAL_GetTick() - tx_goodcrc_deadline_) >= 0) {
+        tx_awaiting_goodcrc_ = false;
+        auto expected = pd::TCPC_TRANSMIT_STATUS::SENDING;
+        if (port_.tcpc_tx_status.compare_exchange_strong(expected,
+                pd::TCPC_TRANSMIT_STATUS::FAILED)) {
+            tx_done_ = true;
+            tx_success_ = false;
         }
+    }
 
-        static uint32_t fetch_cnt = 0;
-        if (++fetch_cnt <= 3) {
-            char b[60];
-            snprintf(b, sizeof(b), "[RX] hdr=%04X ndo=%u sz=%u ord=%lu\r\n",
-                     chunk.header.raw_value,
-                     (unsigned)chunk.header.data_obj_count,
-                     (unsigned)rx_size_,
-                     (unsigned long)rx_ordset_);
-            dbg(b);
-        }
+    // Pop the oldest pending message straight into port.rx_chunk.
+    // spsc_overwrite_queue::pop() detects a concurrent ISR overwrite and
+    // re-reads, so no critical section is needed here.
+    if (!rx_queue_.pop(port_.rx_chunk)) return false;
+
+    static uint32_t fetch_cnt = 0;
+    if (++fetch_cnt <= 3) {
+        char b[60];
+        snprintf(b, sizeof(b), "[RX] hdr=%04X ndo=%u sz=%u ord=%lu\r\n",
+                 port_.rx_chunk.header.raw_value,
+                 (unsigned)port_.rx_chunk.header.data_obj_count,
+                 (unsigned)port_.rx_chunk.data_size(),
+                 (unsigned long)rx_ordset_);
+        dbg(b);
     }
 
     return true;
@@ -344,30 +348,15 @@ void UcpdDriver::setup_tx_dma(const uint8_t* data, uint16_t size) {
 volatile uint32_t ucpd_tx_count = 0;
 
 void UcpdDriver::req_transmit() {
-    // The ISR sends GoodCRC and cable_emu VDM responses on DMA channel 2.
-    // The main loop can reach here in ~50-100 us — before the ISR's TX
-    // finishes.  Spin until the ISR-initiated TX completes to prevent
-    // DMA CH2 clobbering that corrupts both messages.
-    // Timeout after 5 ms to avoid infinite hang if flags get stuck.
-    {
-        uint32_t t0 = HAL_GetTick();
-        while (goodcrc_tx_pending_ || cable_goodcrc_tx_pending_ ||
-               cable_response_tx_pending_) {
-            if ((int32_t)(HAL_GetTick() - t0) >= 5) {
-                // Timeout — force-clear flags and continue
-                goodcrc_tx_pending_ = false;
-                cable_goodcrc_tx_pending_ = false;
-                cable_response_tx_pending_ = false;
-                break;
-            }
-        }
-    }
-
     auto& chunk = port_.tx_chunk;
     port_.tcpc_tx_status.store(pd::TCPC_TRANSMIT_STATUS::SENDING);
 
     tx_done_ = false;
     tx_success_ = false;
+    // Record the message ID for the software GoodCRC match in the ISR.
+    // A new attempt invalidates any stale wait state.
+    tx_awaiting_goodcrc_ = false;
+    tx_goodcrc_msg_id_ = chunk.header.message_id;
 
     // Build TX buffer: header (2 bytes LE) + data objects
     uint16_t payload = static_cast<uint16_t>(chunk.data_size());
@@ -393,10 +382,41 @@ void UcpdDriver::req_transmit() {
         }
     }
 
-    // Mask UCPD IRQ while setting up DMA CH2 + firing TXSEND.
+    // Acquire DMA CH2: the ISR sends GoodCRC and cable_emu VDM responses on
+    // the same channel, and the main loop can reach here in ~50-100 us —
+    // before the ISR's TX finishes.  Mask the UCPD IRQ FIRST and only then
+    // check the busy flags: checking first leaves a window where an
+    // RXMSGEND between the last check and NVIC_DisableIRQ lets the ISR
+    // start a GoodCRC on the channel we are about to reconfigure.
+    //
+    // The wait bound is a loop counter, NOT HAL_GetTick(): this function
+    // can run in SysTick context (PD tick), where HAL_GetTick() does not
+    // advance and a tick-based timeout would never expire.
+    // ~1500 * ~4 us ≈ 6 ms covers the worst-case ISR TX chain
+    // (SOP' GoodCRC + 22-byte VDM ACK ≈ 2 ms on-wire).
+    bool ch2_acquired = false;
+    for (uint32_t tries = 0; tries < 1500; ++tries) {
+        NVIC_DisableIRQ(UCPD1_IRQn);
+        __DSB(); __ISB();   // guarantee no late ISR entry after the disable
+        if (!goodcrc_tx_pending_ && !cable_goodcrc_tx_pending_ &&
+            !cable_response_tx_pending_) {
+            ch2_acquired = true;   // keep the IRQ masked for the setup below
+            break;
+        }
+        NVIC_EnableIRQ(UCPD1_IRQn);
+        for (volatile uint32_t d = 0; d < 128; ++d) { /* ~4 us @ 128 MHz */ }
+    }
+    if (!ch2_acquired) {
+        // The ISR TX may genuinely still be in flight — do NOT force-clear
+        // its flags or touch DMA CH2 (that would corrupt the message on the
+        // wire).  Report failure; the PRL retry machinery resends.
+        port_.tcpc_tx_status.store(pd::TCPC_TRANSMIT_STATUS::FAILED);
+        return;
+    }
+
+    // UCPD IRQ is masked here: safe to set up DMA CH2 + fire TXSEND.
     // If a message arrives between setup_tx_dma and SendMessage, the ISR
     // would send a GoodCRC on the same DMA channel, clobbering our Request.
-    NVIC_DisableIRQ(UCPD1_IRQn);
     LL_UCPD_WriteTxOrderSet(ucpd_, LL_UCPD_ORDERED_SET_SOP);
     LL_UCPD_SetTxMode(ucpd_, LL_UCPD_TXMODE_NORMAL);
     LL_UCPD_WriteTxPaySize(ucpd_, total);
@@ -433,9 +453,12 @@ auto UcpdDriver::get_hw_features() -> pd::TCPC_HW_FEATURES {
     //       manually from the ISR (irq_handle_rxmsgend fast-path).  PRL's
     //       PRL_Rx_Send_GoodCRC state is a pass-through regardless of this flag,
     //       so setting it false is safe and accurate.
-    //   tx_auto_goodcrc_check = true — the UCPD peripheral waits for the
-    //       partner's GoodCRC after TX and reports success/failure via
-    //       TXMSGSENT/TXMSGDISC interrupts.
+    //   tx_auto_goodcrc_check = true — the G4 UCPD is a raw PHY: TXMSGSENT
+    //       only means "transmitted", not "acknowledged".  The driver
+    //       verifies the partner's GoodCRC in software (message-ID match in
+    //       irq_handle_rxmsgend + tReceive timeout polled in fetch_rx_data)
+    //       before reporting SUCCEEDED/FAILED, so from PRL's point of view
+    //       the confirmation behaves like hardware GoodCRC checking.
     //   tx_auto_retry = false — G4 UCPD has NO hardware auto-retry.  Setting
     //       this false enables PRL software retries (up to nRetryCount = 2),
     //       giving 3 total TX attempts instead of 1.  Previously true, which
@@ -550,16 +573,23 @@ void UcpdDriver::irq_handle_rxmsgend() {
     // Remaining work is non-time-critical and runs while the UCPD PHY
     // transmits the preamble + GoodCRC body on CC (~213 us).
 
-    // Copy data to rx_buf_ ONLY for messages that will be forwarded to PRL.
-    // GoodCRC and SOP' must NOT touch rx_buf_ — they would contaminate
-    // a pending SRC_CAPA or Accept that hasn't been fetched yet.
-    if (is_sop && !is_goodcrc && size > 0 && size <= RX_BUF_SIZE) {
-        memcpy(rx_buf_, dma_buf_, size);
-        rx_ordset_ = ordset;
-        rx_size_ = size;
+    // Enqueue ONLY messages that will be forwarded to PRL.  GoodCRC and
+    // SOP' must NOT be enqueued — they would contaminate a pending SRC_CAPA
+    // or Accept that hasn't been fetched yet.  The queue (vs a single slot)
+    // keeps back-to-back messages we already GoodCRC-acknowledged from
+    // being silently dropped before the PRL fetches them.
+    if (is_sop && !is_goodcrc && size >= 2 && size <= RX_BUF_SIZE) {
+        pd::PD_CHUNK pkt{};
+        pkt.header.raw_value = raw_hdr;
+        auto& buf = pkt.get_data();
+        for (uint16_t i = 2; i < size && buf.available() > 0; ++i) {
+            buf.push_back(dma_buf_[i]);
+        }
+        rx_queue_.push(pkt);
+        rx_ordset_ = ordset;   // debug only
     }
 
-    // Restart RX DMA (writes to dma_buf_, not rx_buf_)
+    // Restart RX DMA (writes to dma_buf_; forwarded data is already queued)
     LL_DMA_DisableChannel(DMA1, LL_DMA_CHANNEL_1);
     LL_DMA_SetDataLength(DMA1, LL_DMA_CHANNEL_1, RX_BUF_SIZE);
     LL_DMA_SetMemoryAddress(DMA1, LL_DMA_CHANNEL_1,
@@ -625,10 +655,10 @@ void UcpdDriver::irq_handle_rxmsgend() {
 
         cable_tx_size_ = resp_sz;
 
-        // Phase 1: send SOP' GoodCRC (CablePlug=1 in bit 5).
+        // Phase 1: send SOP' GoodCRC (Cable Plug = 1 in bit 8).
         uint8_t msg_id_bits = (raw_hdr >> 9) & 0x07;
         uint16_t goodcrc_hdr = 0x0001            // msg_type = GoodCRC
-                             | (1 << 5)           // CablePlug = 1
+                             | (1 << 8)           // Cable Plug = 1 (bit 8 in SOP' headers; bit 5 is reserved)
                              | (raw_hdr & 0x00C0) // spec_revision
                              | (msg_id_bits << 9);
 
@@ -652,14 +682,25 @@ void UcpdDriver::irq_handle_rxmsgend() {
         return;
     }
 
-    // GoodCRC — already handled by hardware TXMSGSENT
-    if (is_goodcrc) { ucpd_goodcrc_filtered++; return; }
-
-    // SOP message: GoodCRC was already sent in the fast-path above.
-    // Mark as pending for PRL to pick up.
-    if (is_sop) {
-        rx_msg_pending_ = true;
+    // GoodCRC from the partner — this is the acknowledgment of our own SOP
+    // TX.  Match the message ID against the message we sent and report
+    // SUCCEEDED to the PRL.  Never forwarded to the PRL itself.
+    if (is_goodcrc) {
+        ucpd_goodcrc_filtered++;
+        if (tx_awaiting_goodcrc_ &&
+            ((raw_hdr >> 9) & 0x07) == tx_goodcrc_msg_id_) {
+            tx_awaiting_goodcrc_ = false;
+            tx_done_ = true;
+            tx_success_ = true;
+            auto expected = pd::TCPC_TRANSMIT_STATUS::SENDING;
+            port_.tcpc_tx_status.compare_exchange_strong(expected,
+                pd::TCPC_TRANSMIT_STATUS::SUCCEEDED);
+        }
+        return;
     }
+
+    // SOP message: GoodCRC was already sent in the fast-path above, and the
+    // message was pushed to rx_queue_ for the PRL to pick up.
 }
 
 volatile uint32_t ucpd_tx_ok = 0, ucpd_tx_fail = 0;
@@ -687,7 +728,7 @@ void UcpdDriver::irq_handle_txmsgsent() {
                 // Send SOP' GoodCRC for the deferred Discover_Identity.
                 uint8_t msg_id_bits = (sop1_deferred_hdr_ >> 9) & 0x07;
                 uint16_t gcrc_hdr = 0x0001
-                                  | (1 << 5)
+                                  | (1 << 8)   // Cable Plug = 1 (bit 8 in SOP' headers)
                                   | (sop1_deferred_hdr_ & 0x00C0)
                                   | (msg_id_bits << 9);
 
@@ -739,12 +780,13 @@ void UcpdDriver::irq_handle_txmsgsent() {
         return;
     }
 
-    tx_done_ = true;
-    tx_success_ = true;
-
-    auto expected = pd::TCPC_TRANSMIT_STATUS::SENDING;
-    port_.tcpc_tx_status.compare_exchange_strong(expected,
-        pd::TCPC_TRANSMIT_STATUS::SUCCEEDED);
+    // PRL message left the wire.  Do NOT report SUCCEEDED yet — TXMSGSENT
+    // only confirms transmission, not the partner's GoodCRC.  Arm the
+    // software check: a matching SOP GoodCRC (irq_handle_rxmsgend) reports
+    // SUCCEEDED; fetch_rx_data() reports FAILED if tReceive expires first.
+    // HAL tick is 1 ms, so +2 guarantees at least ~1.1 ms of real time.
+    tx_goodcrc_deadline_ = HAL_GetTick() + 2;
+    tx_awaiting_goodcrc_ = true;
 }
 
 void UcpdDriver::irq_handle_txmsgdisc() {
@@ -802,9 +844,10 @@ void UcpdDriver::irq_handle_rxhrstdet() {
     // Do NOT clear cable_emu_disabled_ — same cable, same e-marker.
 
     // Clear pending RX/TX flags — hard reset invalidates all in-flight state.
-    rx_msg_pending_ = false;
+    rx_queue_.clear_from_producer();   // ISR context == producer side
     sop1_deferred_pending_ = false;
     goodcrc_tx_pending_ = false;
+    tx_awaiting_goodcrc_ = false;
 
     port_.notify_prl(pd::MsgToPrl_TcpcHardReset{});
 }
@@ -816,9 +859,10 @@ void UcpdDriver::irq_handle_hrstsent() {
     cable_emu_reset();
 
     // Clear pending RX/TX flags — hard reset invalidates all in-flight state.
-    rx_msg_pending_ = false;
+    rx_queue_.clear_from_producer();   // ISR context == producer side
     sop1_deferred_pending_ = false;
     goodcrc_tx_pending_ = false;
+    tx_awaiting_goodcrc_ = false;
 
     hr_sent_ = true;
 }

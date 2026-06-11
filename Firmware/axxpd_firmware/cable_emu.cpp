@@ -13,7 +13,7 @@
 //
 // Response VDO layout (5 data objects = 20 bytes + 2 byte header = 22 bytes):
 //   DO[0] VDM Header:       0xFF008041 | (svdm_ver << 11)
-//   DO[1] ID Header VDO:    0x00430000  (PassiveCable, USB-C both ends)
+//   DO[1] ID Header VDO:    0x18600483  (Passive Cable, USB-C plug, VID 0x0483)
 //   DO[2] Cert Stat VDO:    0x00000000
 //   DO[3] Product VDO:      0x00000000
 //   DO[4] Passive Cable VDO: 0x116A2640  (50V 5A EPR)
@@ -52,8 +52,9 @@ uint16_t cable_emu_build_response(const uint8_t* rx, uint16_t rx_size,
     // --- Build response (22 bytes) ---
 
     // PD Header: NDO=5, CablePlug=1, Rev=PD3.0, MsgType=0x0F (Vendor_Defined)
-    // Bits: [15:13]=NDO=5 -> 101, [12]=ext=0, [11:9]=msgid, [8]=pwr_role=0,
-    //       [7:6]=rev=01(PD3.0), [5]=data_role(CablePlug)=1, [4:0]=0x0F
+    // Bits: [15:13]=NDO=5 -> 101, [12]=ext=0, [11:9]=msgid,
+    //       [8]=CablePlug=1 (bit 8 in SOP' headers), [7:6]=rev=01(PD3.0),
+    //       [5]=reserved=0 for SOP', [4:0]=0x0F
     uint16_t hdr = 0x518F | (static_cast<uint16_t>(cable_msgid & 7) << 9);
     cable_msgid = (cable_msgid + 1) & 7;
     tx[0] = hdr & 0xFF;
@@ -64,9 +65,16 @@ uint16_t cable_emu_build_response(const uint8_t* rx, uint16_t rx_size,
     uint32_t vdm_resp = 0xFF008041 | (static_cast<uint32_t>(svdm_ver & 0x3) << 13);
     memcpy(&tx[2], &vdm_resp, 4);
 
-    // DO[1] ID Header VDO: product_type_ufp=PassiveCable(3)@[20:16],
-    //        connector_type=USB-C(2)@[22:21]
-    uint32_t idh = 0x00430000;
+    // DO[1] ID Header VDO (SOP', PD 3.1): 0x18600483
+    //   [31]    USB host capable = 0
+    //   [30]    USB device capable = 0
+    //   [29:27] Product Type (Cable Plug) = 011 (Passive Cable)
+    //   [26]    modal operation = 0
+    //   [25:23] Product Type (DFP) = 000 (zero for cable plug)
+    //   [22:21] connector type = 11 (USB-C plug)
+    //   [20:16] reserved = 0
+    //   [15:0]  USB VID = 0x0483 (STMicroelectronics)
+    uint32_t idh = 0x18600483;
     memcpy(&tx[6], &idh, 4);
 
     // DO[2] Cert Stat VDO
