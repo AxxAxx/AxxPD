@@ -13,7 +13,9 @@
 /* ------------------------------------------------------------------ */
 const MI_Entry g_mi_table[] = {
     /* Mode group */
-    { MI_REMEMBER_BOOT,   (uint8_t)offsetof(Settings_t, remember_boot),   "Remember boot"   },
+    { MI_REMEMBER_BOOT,   (uint8_t)offsetof(Settings_t, remember_boot),   "Restore last V/I" },
+    { MI_POWER_ON_BOOT,   (uint8_t)offsetof(Settings_t, power_on_boot),   "Power on boot"   },
+    { MI_START_LOCKED,    (uint8_t)offsetof(Settings_t, start_locked),    "Start locked"    },
     { MI_BOOT_SELECTOR,   (uint8_t)offsetof(Settings_t, boot_selector),   "Boot PDO select"  },
     { MI_SERIAL_TERMINAL, (uint8_t)offsetof(Settings_t, serial_terminal), "Serial terminal"  },
     { MI_SPLASH_SCREEN,   (uint8_t)offsetof(Settings_t, splash_screen),   "Splash screen"    },
@@ -43,7 +45,7 @@ const MI_Entry g_mi_table[] = {
     /* System group (actions — no flash field) */
     { MI_LOAD_DEFAULT,    MI_NO_FLASH,                                    "Load defaults"    },
     { MI_SAVE_REBOOT,     MI_NO_FLASH,                                    "Save & Reboot"    },
-    { MI_EXIT_NO_SAVE,    MI_NO_FLASH,                                    "Exit no save"     },
+    { MI_EXIT_NO_SAVE,    MI_NO_FLASH,                                    "Exit"             },
 };
 
 const uint8_t g_mi_table_size = sizeof(g_mi_table) / sizeof(g_mi_table[0]);
@@ -52,7 +54,7 @@ const uint8_t g_mi_table_size = sizeof(g_mi_table) / sizeof(g_mi_table[0]);
 /*  Menu groups                                                        */
 /* ------------------------------------------------------------------ */
 static const uint16_t mode_items[] = {
-    MI_REMEMBER_BOOT, MI_BOOT_SELECTOR, MI_SERIAL_TERMINAL, MI_SPLASH_SCREEN
+    MI_REMEMBER_BOOT, MI_POWER_ON_BOOT, MI_START_LOCKED, MI_BOOT_SELECTOR, MI_SERIAL_TERMINAL, MI_SPLASH_SCREEN
 };
 
 static const uint16_t display_items[] = {
@@ -161,10 +163,12 @@ const char* Menu_GetValueStr(uint16_t mi)
                 return "3 retries";
             }
             case MI_GRAPH_WINDOW: {
-                uint8_t w = Settings_GetGraphWindow();
-                if (w == 0) return "5s";
-                if (w == 2) return "20s";
-                return "10s";
+                switch (Settings_GetGraphWindow()) {
+                    case 0:  return "5s";
+                    case 2:  return "30s";
+                    case 3:  return "60s";
+                    default: return "10s";
+                }
             }
             case MI_CHARGE_COMPLETE_MA: {
                 uint32_t ma = Settings_GetChargeCompleteMa();

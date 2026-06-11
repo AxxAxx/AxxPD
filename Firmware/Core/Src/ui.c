@@ -170,6 +170,11 @@ extern volatile uint8_t g_hw_fault;       /* set by HW fault ISR, cleared by UI 
 extern volatile uint8_t g_fault_source;   /* sequential fault code: FAULT_COMP_OVP, FAULT_LTC4368, etc. */
 extern volatile uint8_t g_output_enabled;
 extern INA228_t g_ina;
+
+/* Boot autostart countdown (main.c) */
+extern uint8_t Boot_AutostartPending(void);
+extern int     Boot_AutostartSecsRemaining(void);
+extern void    Boot_AutostartAbort(void);
 uint16_t Timer_GetRemaining(void);        /* declared in main.h, defined in main.c */
 
 
@@ -508,60 +513,83 @@ static void UI_DrawDashboard(INA228_Reading_t *r, float ntc_temp, uint8_t output
         LCD_PutStr(COL_RIGHT + 106, SET_Y, "A  ", FONT_MD, COL_CURRENT, COL_BG);
     }
 
-    /* Bottom row: power reading — same auto-format as V/A:
-     * >=100W: "123W "  (no decimal, 3 digits)
-     * >=10W:  "77.8W " (1 decimal, 3 significant digits)
-     * <10W:   "5.23W " (2 decimals, 3 significant digits) */
-    fmt_3sig(buf, sizeof(buf), r->power_w, "W", " ");
-    LCD_PutStr(DRAW_X, CONTENT_Y + 68, buf, FONT_LG, COL_POWER, COL_BG);
-
-    /* CC/CV mode indicator — shows whether output is current- or voltage-limited */
+    /* Bottom region: normally the power + CC/CV + cable-drop readouts, but while
+     * a boot autostart is counting down it is REPLACED by the countdown banner.
+     * Drawing one OR the other (never both) in this region is essential — the
+     * banner and the power/CC-CV readouts share these pixels, and letting both
+     * paint every frame is what caused the flicker/overwrite. Output is off
+     * during the countdown, so the readouts carry no useful info meanwhile. */
     {
-        static uint8_t prev_cccv = 0; /* 0=none, 1=CV, 2=CC */
-        if (output_on) {
-            float neg_a = axxpd_get_negotiated_a();
-            uint8_t is_cc = (r->current_a > 0.1f && neg_a > 0.1f && r->current_a >= neg_a * 0.95f) ? 1U : 0U;
-            uint8_t cccv = is_cc ? 2U : 1U;
-            if (cccv != prev_cccv) {
-                LCD_Fill(DRAW_X + 160, CONTENT_Y + 68, DRAW_X + 195, CONTENT_Y + 86, COL_BG);
+        static uint8_t s_autostart_banner = 0;
+        #define BAN_Y0  (CONTENT_Y + 66)        /* top of the bottom region */
+        if (Boot_AutostartPending()) {
+            if (!s_autostart_banner) {           /* fill once, then only text repaints */
+                LCD_Fill(0, BAN_Y0, SCREEN_W - 1, NAVBAR_Y - 1, COL_SEL_BG);
+                s_autostart_banner = 1;
             }
-            #define COL_CCCV  RGB(93, 162, 240)
-            if (is_cc) {
-                LCD_PutStr(DRAW_X + 160, CONTENT_Y + 68, "CC", FONT_SM, COL_CCCV, COL_BG);
-            } else {
-                LCD_PutStr(DRAW_X + 160, CONTENT_Y + 68, "CV", FONT_SM, COL_CCCV, COL_BG);
-            }
-            prev_cccv = cccv;
+            char ab[40];
+            int secs = Boot_AutostartSecsRemaining();
+            if (secs > 0) snprintf(ab, sizeof(ab), "Autostarting in: %d", secs);
+            else          snprintf(ab, sizeof(ab), "Autostarting...   ");
+            LCD_PutStr(DRAW_X, CONTENT_Y + 68, ab,                FONT_SM, COL_WHITE, COL_SEL_BG);
+            LCD_PutStr(DRAW_X, CONTENT_Y + 86, "SELECT to abort", FONT_SM, COL_WHITE, COL_SEL_BG);
         } else {
-            if (prev_cccv != 0U) {
-                LCD_Fill(DRAW_X + 160, CONTENT_Y + 68, DRAW_X + 195, CONTENT_Y + 86, COL_BG);
-                prev_cccv = 0;
+            if (s_autostart_banner) {            /* leaving the countdown — clear the strip */
+                LCD_Fill(0, BAN_Y0, SCREEN_W - 1, NAVBAR_Y - 1, COL_BG);
+                s_autostart_banner = 0;
             }
-        }
-    }
 
+            /* Bottom row: power reading — >=100W:"123W"  >=10W:"77.8W"  <10W:"5.23W" */
+            fmt_3sig(buf, sizeof(buf), r->power_w, "W", " ");
+            LCD_PutStr(DRAW_X, CONTENT_Y + 68, buf, FONT_LG, COL_POWER, COL_BG);
 
-
-    /* Cable voltage drop warning — shown when INA228 is available and drop > 0.3V */
-    {
-        static uint8_t cable_warn_shown = 0;
-        if (output_on && g_ina.hi2c != NULL && r->current_a > 0.1f) {
-            float drop = axxpd_get_negotiated_v() - r->voltage_v;
-            if (drop > 0.3f) {
-                char cw[18];
-                snprintf(cw, sizeof(cw), "Cable:-%4.2fV", (double)drop);
-                LCD_PutStr(DRAW_X + 160, CONTENT_Y + 86, cw, FONT_SM, COL_WHITE, COL_BG);
-                cable_warn_shown = 1;
-            } else {
-                if (cable_warn_shown) {
-                    LCD_Fill(DRAW_X + 160, CONTENT_Y + 86, SCREEN_W - 1, CONTENT_Y + 104, COL_BG);
-                    cable_warn_shown = 0;
+            /* CC/CV mode indicator — current- or voltage-limited */
+            {
+                static uint8_t prev_cccv = 0; /* 0=none, 1=CV, 2=CC */
+                if (output_on) {
+                    float neg_a = axxpd_get_negotiated_a();
+                    uint8_t is_cc = (r->current_a > 0.1f && neg_a > 0.1f && r->current_a >= neg_a * 0.95f) ? 1U : 0U;
+                    uint8_t cccv = is_cc ? 2U : 1U;
+                    if (cccv != prev_cccv) {
+                        LCD_Fill(DRAW_X + 160, CONTENT_Y + 68, DRAW_X + 195, CONTENT_Y + 86, COL_BG);
+                    }
+                    #define COL_CCCV  RGB(93, 162, 240)
+                    if (is_cc) {
+                        LCD_PutStr(DRAW_X + 160, CONTENT_Y + 68, "CC", FONT_SM, COL_CCCV, COL_BG);
+                    } else {
+                        LCD_PutStr(DRAW_X + 160, CONTENT_Y + 68, "CV", FONT_SM, COL_CCCV, COL_BG);
+                    }
+                    prev_cccv = cccv;
+                } else {
+                    if (prev_cccv != 0U) {
+                        LCD_Fill(DRAW_X + 160, CONTENT_Y + 68, DRAW_X + 195, CONTENT_Y + 86, COL_BG);
+                        prev_cccv = 0;
+                    }
                 }
             }
-        } else {
-            if (cable_warn_shown) {
-                LCD_Fill(DRAW_X + 160, CONTENT_Y + 86, SCREEN_W - 1, CONTENT_Y + 104, COL_BG);
-                cable_warn_shown = 0;
+
+            /* Cable voltage drop warning — shown when INA228 available and drop > 0.3V */
+            {
+                static uint8_t cable_warn_shown = 0;
+                if (output_on && g_ina.hi2c != NULL && r->current_a > 0.1f) {
+                    float drop = axxpd_get_negotiated_v() - r->voltage_v;
+                    if (drop > 0.3f) {
+                        char cw[18];
+                        snprintf(cw, sizeof(cw), "Cable:-%4.2fV", (double)drop);
+                        LCD_PutStr(DRAW_X + 160, CONTENT_Y + 86, cw, FONT_SM, COL_WHITE, COL_BG);
+                        cable_warn_shown = 1;
+                    } else {
+                        if (cable_warn_shown) {
+                            LCD_Fill(DRAW_X + 160, CONTENT_Y + 86, SCREEN_W - 1, CONTENT_Y + 104, COL_BG);
+                            cable_warn_shown = 0;
+                        }
+                    }
+                } else {
+                    if (cable_warn_shown) {
+                        LCD_Fill(DRAW_X + 160, CONTENT_Y + 86, SCREEN_W - 1, CONTENT_Y + 104, COL_BG);
+                        cable_warn_shown = 0;
+                    }
+                }
             }
         }
     }
@@ -789,10 +817,10 @@ static void UI_DrawEnergy(INA228_Reading_t *r, float ntc_temp, uint8_t output_on
     LCD_PutStr(DRAW_X, CONTENT_Y, buf, FONT_XL, COL_YELLOW, COL_BG);
 
     fmt_3sig(buf, sizeof(buf), r->current_a, "A", "  ");
-    LCD_PutStr(DRAW_X, CONTENT_Y + 40, buf, FONT_MD, COL_CURRENT, COL_BG);
+    LCD_PutStr(DRAW_X, CONTENT_Y + 48, buf, FONT_MD, COL_CURRENT, COL_BG);
 
     fmt_3sig(buf, sizeof(buf), r->power_w, "W", "  ");
-    LCD_PutStr(NRG_COL_R, CONTENT_Y + 40, buf, FONT_MD, COL_POWER, COL_BG);
+    LCD_PutStr(NRG_COL_R, CONTENT_Y + 48, buf, FONT_MD, COL_POWER, COL_BG);
 
     if (r->charge_ah >= 1000.0f)
         snprintf(buf, sizeof(buf), "%.0f Ah ", (double)r->charge_ah);
@@ -800,7 +828,7 @@ static void UI_DrawEnergy(INA228_Reading_t *r, float ntc_temp, uint8_t output_on
         snprintf(buf, sizeof(buf), "%.1f Ah ", (double)r->charge_ah);
     else
         snprintf(buf, sizeof(buf), "%.3f Ah ", (double)r->charge_ah);
-    LCD_PutStr(DRAW_X, CONTENT_Y + 66, buf, FONT_MD, COL_CURRENT, COL_BG);
+    LCD_PutStr(DRAW_X, CONTENT_Y + 74, buf, FONT_MD, COL_CURRENT, COL_BG);
 
     if (r->energy_wh >= 1000.0f)
         snprintf(buf, sizeof(buf), "%.0f Wh ", (double)r->energy_wh);
@@ -808,7 +836,7 @@ static void UI_DrawEnergy(INA228_Reading_t *r, float ntc_temp, uint8_t output_on
         snprintf(buf, sizeof(buf), "%.1f Wh ", (double)r->energy_wh);
     else
         snprintf(buf, sizeof(buf), "%.3f Wh ", (double)r->energy_wh);
-    LCD_PutStr(NRG_COL_R, CONTENT_Y + 66, buf, FONT_MD, COL_POWER, COL_BG);
+    LCD_PutStr(NRG_COL_R, CONTENT_Y + 74, buf, FONT_MD, COL_POWER, COL_BG);
 
     UI_DrawScreenIndicator();
 }
@@ -825,6 +853,7 @@ static void UI_DrawEnergy(INA228_Reading_t *r, float ntc_temp, uint8_t output_on
 static uint8_t s_set_prev_group = 0xFF, s_set_prev_item = 0xFF;
 static uint8_t s_set_prev_level = 0xFF, s_set_prev_edit = 0xFF;
 static uint8_t s_set_scroll = 0;
+static uint8_t s_set_prev_adj = 0;              /* previous adjusting_flag state */
 
 /* ------------------------------------------------------------------ */
 /*  Tool overlay state                                                 */
@@ -1250,9 +1279,9 @@ static void UI_DrawSettings(float ntc_temp, uint8_t output_on)
             uint8_t idx = s_set_scroll + r;
             uint8_t sel = (idx == settings_item);
             uint8_t was = (idx == s_set_prev_item);
-            /* Skip rows where neither selection nor value changed */
             uint8_t adjusting_this = (sel && settings_adjusting_flag && idx < grp->count);
-            if (!full && sel == was && !adjusting_this) continue;
+            uint8_t adj_exit = (!settings_adjusting_flag && s_set_prev_adj && sel);
+            if (!full && sel == was && !adjusting_this && !adj_exit) continue;
 
             uint16_t y = CONTENT_Y + (r + 1U) * row_h;
 
@@ -1269,6 +1298,18 @@ static void UI_DrawSettings(float ntc_temp, uint8_t output_on)
             if (adjusting_this) {
                 row_bg  = COL_BG;
                 name_fg = COL_WHITE;
+            }
+
+            /* While adjusting, skip LCD_Fill — just overdraw the value.
+             * First frame (enter) still needs LCD_Fill for the bg change. */
+            if (adjusting_this && s_set_prev_adj && !full) {
+                if (idx < grp->count) {
+                    uint16_t mi = grp->items[idx];
+                    const char *val  = Menu_GetValueStr(mi);
+                    snprintf(buf, sizeof(buf), "%-10s", val);
+                    LCD_PutStr(220, y + TEXT_VPAD, buf, FONT_SM, val_fg, val_bg);
+                }
+                continue;
             }
 
             LCD_Fill(0, y, SCREEN_W - 1, y + row_h - 1, row_bg);
@@ -1297,6 +1338,7 @@ static void UI_DrawSettings(float ntc_temp, uint8_t output_on)
     s_set_prev_edit  = edit_mode;
     s_set_prev_scroll = s_set_scroll;
     s_grp_prev_scroll = grp_scroll;
+    s_set_prev_adj   = settings_adjusting_flag;
 
     if (flash_msg != NULL) {
         uint16_t msg_y = NAVBAR_Y - 22;
@@ -1340,7 +1382,7 @@ void UI_Update(INA228_Reading_t *reading, float ntc_temp, uint8_t output_on)
     if (edit_mode != prev_edit_mode) {
         s_pdo_prev_cursor = 0xFF; s_pdo_prev_scroll = 0xFF; s_pdo_prev_count = 0xFF;
         s_pre_prev_cursor = 0xFF; s_pre_prev_scroll = 0xFF;
-        s_set_prev_group = 0xFF;
+        s_set_prev_group = 0xFF; s_set_prev_adj = 0;
         prev_edit_mode = edit_mode;
     }
 
@@ -1367,6 +1409,7 @@ void UI_Update(INA228_Reading_t *reading, float ntc_temp, uint8_t output_on)
             settings_item  = 0;
             s_set_scroll   = 0;
             settings_adjusting_flag = 0;
+            s_set_prev_adj = 0;
         }
         prev_screen = current_screen;
     }
@@ -1497,6 +1540,15 @@ void UI_HandleButton(ButtonEvent_t event)
         return;
     }
     if (g_hw_fault && !fault_acked) return;  /* swallow all buttons during fault */
+
+    /* Autostart countdown — SELECT cancels this boot's auto power-on. Checked
+     * high (just below fault) so it works on any screen during the window. */
+    if (Boot_AutostartPending() && event == BTN_SEL_PRESS) {
+        Boot_AutostartAbort();
+        flash_msg = "Autostart cancelled";
+        flash_msg_tick = HAL_GetTick();
+        return;
+    }
 
     /* UI lock — reject all events except SEL_LONG (unlock) */
     if (ui_locked) {
@@ -1645,6 +1697,13 @@ void UI_HandleButton(ButtonEvent_t event)
                                  (unsigned long)(mv/1000), (unsigned long)((mv%1000)/100));
                         LCD_Fill(0, STATUSBAR_H, SCREEN_W - 1, NAVBAR_Y - 1, COL_BG);
                         LCD_PutStr(70, 80, msg, FONT_MD, COL_YELLOW, COL_BG);
+                        /* Persist this selection for "Restore last V/I". For a
+                         * fixed PDO the advertised current is bits[9:0]*10mA;
+                         * APDOs request max (0). */
+                        if (mv >= 3300U) {
+                            uint32_t sel_ma = (tt == 0U) ? (((tp >> 0) & 0x3FFU) * 10U) : 0U;
+                            Settings_SaveLastSettings(mv, sel_ma);
+                        }
                         axxpd_request_pdo_position(pos);
                     }
                 }
@@ -1785,11 +1844,16 @@ void UI_HandleButton(ButtonEvent_t event)
                             Settings_LoadDefaults();
                             flash_msg = "Defaults loaded";
                             flash_msg_tick = HAL_GetTick();
+                            s_set_prev_group = 0xFF;  /* values changed en masse — force redraw */
                         } else if (mi == MI_SAVE_REBOOT) {
-                            Settings_Save();
+                            Settings_SaveImmediate();  /* blocking — deferred save would be lost on reset */
                             NVIC_SystemReset();
                         } else if (mi == MI_EXIT_NO_SAVE) {
-                            Settings_Init(); /* reload from flash, discard */
+                            /* Just exit. Settings already auto-save on change, so
+                             * there is nothing to discard — and reloading flash
+                             * here (old Settings_Init) reverted any change still
+                             * deferred under EPR (e.g. the graph window), making
+                             * it look like the setting "didn't work". */
                             edit_mode = 0;
                             settings_level = 0;
                             current_screen = UI_SCREEN_DASHBOARD;
@@ -1823,8 +1887,12 @@ void UI_HandleButton(ButtonEvent_t event)
                             /* Numeric items: SEL cycles forward (same as INC) */
                             Menu_AdjustNumeric(mi, +1);
                         } else {
-                            /* Bool toggle */
+                            /* Bool toggle — force a settings redraw so the new
+                             * YES/NO (or C/F) value shows immediately. Selection
+                             * didn't change, so the incremental row-redraw path
+                             * would otherwise skip this row until the next scroll. */
                             Menu_ToggleBool(mi);
+                            s_set_prev_group = 0xFF;
                         }
                     }
                     return;

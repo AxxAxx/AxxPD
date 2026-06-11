@@ -34,7 +34,10 @@ typedef struct {
     uint32_t last_current_ma;
     uint8_t  last_used_pdo;      /* 1-based */
     uint8_t  preset_count;
-    uint8_t  _pad2[2];
+    uint8_t  power_on_boot;      /* was _pad2[0]: 1=arm output at boot, 0=NO default.
+                                  * Reuses a pad byte so struct size/CRC are unchanged
+                                  * and existing saved settings still load (read as 0). */
+    uint8_t  start_locked;       /* was _pad2: 1=boot into locked mode (hold SELECT to unlock) */
     /* Protection thresholds */
     uint16_t ocp_ma;             /* Over-current limit in mA, default 5500 */
     uint16_t ovp_mv;             /* Over-voltage limit in mV, default 55000 */
@@ -52,7 +55,7 @@ typedef struct {
     int16_t cal_v_offset_uv;     /* voltage offset in microvolts, default 0 */
     int16_t cal_i_offset_ua;     /* current offset in microamps, default 0  */
     /* Display — graph */
-    uint8_t graph_window;        /* Graph time window: 0=5s, 1=10s (default), 2=20s */
+    uint8_t graph_window;        /* Graph time window: 0=5s, 1=10s (default), 2=30s, 3=60s */
     uint8_t _pad4[1];            /* alignment padding */
     /* Presets */
     Preset_t presets[PRESET_SLOTS];
@@ -65,6 +68,8 @@ enum {
     MI_BOOT_SELECTOR    = 1,
     MI_SERIAL_TERMINAL  = 2,
     MI_SPLASH_SCREEN    = 3,
+    MI_POWER_ON_BOOT    = 4,
+    MI_START_LOCKED     = 5,
     /* Display group (50-99) */
     MI_TEMP_UNIT        = 50,
     MI_GRAPH_WINDOW     = 51,
@@ -113,6 +118,7 @@ typedef struct {
 /* ---- Public API ---- */
 void     Settings_Init(void);
 void     Settings_Save(void);
+void     Settings_SaveImmediate(void);   /* blocking write; use just before reboot */
 
 /* Deferred save — flash erase stalls the CPU for ~50-100ms, which kills
  * EPR KeepAlive (500ms deadline).  Call Settings_ProcessDeferred() from
@@ -123,6 +129,8 @@ void     Settings_LoadDefaults(void);
 
 /* Bool settings accessors */
 uint8_t  Settings_GetRememberBoot(void);
+uint8_t  Settings_GetPowerOnBoot(void);
+uint8_t  Settings_GetStartLocked(void);
 uint8_t  Settings_GetBootSelector(void);
 uint8_t  Settings_GetSerialTerminal(void);
 uint8_t  Settings_GetSplashScreen(void);

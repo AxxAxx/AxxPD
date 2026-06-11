@@ -119,6 +119,8 @@ void Settings_LoadDefaults(void)
 
     /* Mode defaults */
     settings.remember_boot    = 0;  /* NO */
+    settings.power_on_boot    = 0;  /* NO — do not auto-arm output at boot */
+    settings.start_locked     = 0;  /* NO — boot unlocked */
     settings.boot_selector    = 1;  /* YES */
     settings.serial_terminal  = 1;  /* YES */
     settings.splash_screen    = 1;  /* YES */
@@ -281,6 +283,17 @@ void Settings_Save(void)
 }
 
 /**
+ * Force an immediate flash write, bypassing the EPR deferral. The ~50-100 ms
+ * erase stall will miss an EPR KeepAlive — only call this when that is
+ * acceptable, e.g. right before a reboot (MI_SAVE_REBOOT), where deferring
+ * would lose the change because the reset fires before the deferred write.
+ */
+void Settings_SaveImmediate(void)
+{
+    settings_do_flash_write();
+}
+
+/**
  * Called from the main super-loop.  Commits any deferred save when it is
  * safe to do so (EPR no longer active), or forces the write after 10 s
  * to avoid losing settings on an unexpected power loss.
@@ -312,6 +325,8 @@ uint8_t Settings_IsSavePending(void)
 /*  Bool settings accessors                                           */
 /* ------------------------------------------------------------------ */
 uint8_t Settings_GetRememberBoot(void)    { return settings.remember_boot;   }
+uint8_t Settings_GetPowerOnBoot(void)     { return settings.power_on_boot;   }
+uint8_t Settings_GetStartLocked(void)     { return settings.start_locked;    }
 uint8_t Settings_GetBootSelector(void)    { return settings.boot_selector;   }
 uint8_t Settings_GetSerialTerminal(void)  { return settings.serial_terminal; }
 uint8_t Settings_GetSplashScreen(void)    { return settings.splash_screen;   }
@@ -320,7 +335,7 @@ uint8_t Settings_GetStartupBeep(void)     { return settings.startup_beep;    }
 uint8_t Settings_GetTempFahrenheit(void)  { return settings.temp_fahrenheit; }
 void    Settings_SetTempFahrenheit(uint8_t val) { settings.temp_fahrenheit = val ? 1U : 0U; }
 uint8_t Settings_GetGraphWindow(void)    { return settings.graph_window; }
-void    Settings_SetGraphWindow(uint8_t val) { if (val > 2U) val = 2U; settings.graph_window = val; }
+void    Settings_SetGraphWindow(uint8_t val) { if (val > 3U) val = 3U; settings.graph_window = val; }
 
 /** Set a boolean field by its byte offset (fi) within Settings_t.
  *  Used by the menu system to toggle settings generically without
@@ -533,10 +548,10 @@ void Settings_SetNumeric(uint16_t mi, int32_t delta)
             break;
         }
         case MI_GRAPH_WINDOW: {
-            /* Cycle through 3 values: 0=5s, 1=10s, 2=20s */
+            /* Cycle through 4 values: 0=5s, 1=10s, 2=30s, 3=60s */
             int32_t v = (int32_t)settings.graph_window + delta;
-            if (v < 0) v = 2;
-            if (v > 2) v = 0;
+            if (v < 0) v = 3;
+            if (v > 3) v = 0;
             settings.graph_window = (uint8_t)v;
             break;
         }

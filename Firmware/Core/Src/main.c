@@ -91,6 +91,16 @@ static uint32_t g_output_enable_tick = 0; /* tick of last Output_Enable() call *
 #define OUTPUT_TOGGLE_COOLDOWN_MS 1500U   /* min interval between enable events */
 static uint8_t    g_boot_pdo = 0;
 
+/* "Power on at boot" — one-shot. Latched from settings at init; the main loop
+ * arms the output once the PD contract (incl. EPR) has settled, then clears it.
+ * Independent of "remember boot" (which only restores last V/I, no enable). */
+static uint8_t    g_boot_power_on = 0;
+
+/* "Restore last V/I" — one-shot. When set, the main loop requests the saved
+ * voltage/current once the PD contract (incl. EPR negotiation) has settled, so
+ * a saved EPR voltage (e.g. 48V) is applied only after EPR is up. */
+static uint8_t    g_boot_restore_vi = 0;
+
 /* Deferred EPR entry — non-blocking, runs in the main loop.
  * Phase 0: waiting for 1.5 s from boot before attempting.
  * Phase 1: EPR requested, waiting for completion (up to 2 s).
@@ -98,6 +108,10 @@ static uint8_t    g_boot_pdo = 0;
 static uint8_t    g_epr_boot_phase   = 0;
 static uint8_t    g_epr_boot_attempt = 0;
 static uint32_t   g_epr_boot_t0      = 0;
+
+/* Autostart (power_on_boot) abort countdown */
+static volatile uint8_t g_boot_autostart_aborted = 0;  /* SELECT pressed during the window */
+static uint32_t         g_boot_t0 = 0;                  /* HAL_GetTick at boot; countdown reference */
 
 /* Fault event log (ring buffer) */
 volatile FaultLog_t g_fault_log[FAULT_LOG_SIZE];
@@ -139,10 +153,27 @@ static uint32_t last_graph_sample_ms = 0;
 /* NTC temperature poll period */
 #define NTC_POLL_PERIOD_MS        500
 
+/* Autostart (power_on_boot): visible abort-countdown window before arming.
+ * Output arms at max(negotiation_ready, this window) — overlaps the PD/EPR
+ * settle wait so it adds no time beyond the intentional abort window. */
+#define AUTOSTART_COUNTDOWN_S     5U
+
 /* Thermal protection thresholds (Celsius) */
 #define THERMAL_WARN_C            60
 #define THERMAL_SHUTDOWN_C        85
 #define THERMAL_COOLDOWN_C        75
+
+/* INA228 / I2C3 health + bus-recovery state.
+ * The I2C bus to the INA228 can wedge — a slave holding SDA low, or the
+ * peripheral latching its BUSY flag — after which every read fails and the
+ * last reading would otherwise stay frozen on screen forever. (Confirmed via
+ * SWD: SCL+SDA stuck low, I2C3 ISR.BUSY set, voltage frozen at last value.)
+ * We detect repeated read failures, mark the reading untrusted, and recover
+ * the bus (bit-bang SCL to free a stuck slave + peripheral reset). */
+#define INA_FAIL_RECOVER_N        3U      /* consecutive read failures before recovery */
+static uint8_t           g_ina_valid = 0;          /* last reading fresh & trusted */
+static uint16_t          g_ina_fail  = 0;          /* consecutive read failures     */
+static volatile uint32_t g_ina_recover_count = 0;  /* total bus recoveries (diag)   */
 
 /* USER CODE END PV */
 
@@ -161,11 +192,142 @@ static void MX_COMP1_Init(void);
 static void MX_TIM8_Init(void);
 static void MX_DAC1_Init(void);
 /* USER CODE BEGIN PFP */
-
+static void I2C3_BusRecover(void);
 /* USER CODE END PFP */
 
 /* Private user code ---------------------------------------------------------*/
 /* USER CODE BEGIN 0 */
+
+/* ~5 us busy-wait for the I2C bus-recovery bit-bang. Exact timing is not
+ * critical; anything in the 1-10 us range frees a stuck slave. */
+static void i2c_recover_delay(void)
+{
+    for (volatile uint32_t c = 0U; c < (SystemCoreClock / 200000U); c++) { __NOP(); }
+}
+
+/* Recover a wedged I2C3 bus (INA228 @ PA8=SCL / PC11=SDA). Bit-bangs up to 9
+ * SCL pulses to flush a slave holding SDA low, issues a STOP, then hard-resets
+ * and re-inits the peripheral to clear a latched BUSY flag. Does NOT touch the
+ * INA228 config, so the energy/charge accumulators are preserved. */
+static void I2C3_BusRecover(void)
+{
+    GPIO_InitTypeDef gp = {0};
+
+    __HAL_I2C_DISABLE(&hi2c3);
+
+    __HAL_RCC_GPIOA_CLK_ENABLE();
+    __HAL_RCC_GPIOC_CLK_ENABLE();
+    gp.Mode  = GPIO_MODE_OUTPUT_OD;
+    gp.Pull  = GPIO_PULLUP;
+    gp.Speed = GPIO_SPEED_FREQ_LOW;
+    gp.Pin   = GPIO_PIN_8;   HAL_GPIO_Init(GPIOA, &gp);   /* SCL = PA8  */
+    gp.Pin   = GPIO_PIN_11;  HAL_GPIO_Init(GPIOC, &gp);   /* SDA = PC11 */
+    HAL_GPIO_WritePin(GPIOA, GPIO_PIN_8,  GPIO_PIN_SET);
+    HAL_GPIO_WritePin(GPIOC, GPIO_PIN_11, GPIO_PIN_SET);
+    i2c_recover_delay();
+
+    /* Clock SCL until the slave releases SDA (max 9 pulses = one byte + ACK). */
+    for (uint8_t i = 0U; i < 9U; i++) {
+        if (HAL_GPIO_ReadPin(GPIOC, GPIO_PIN_11) == GPIO_PIN_SET) break;
+        HAL_GPIO_WritePin(GPIOA, GPIO_PIN_8, GPIO_PIN_RESET);
+        i2c_recover_delay();
+        HAL_GPIO_WritePin(GPIOA, GPIO_PIN_8, GPIO_PIN_SET);
+        i2c_recover_delay();
+    }
+
+    /* STOP condition: SDA low while SCL high, then SDA released high. */
+    HAL_GPIO_WritePin(GPIOC, GPIO_PIN_11, GPIO_PIN_RESET);
+    i2c_recover_delay();
+    HAL_GPIO_WritePin(GPIOA, GPIO_PIN_8,  GPIO_PIN_SET);
+    i2c_recover_delay();
+    HAL_GPIO_WritePin(GPIOC, GPIO_PIN_11, GPIO_PIN_SET);
+    i2c_recover_delay();
+
+    /* Clear the latched BUSY flag and restore normal AF operation. */
+    __HAL_RCC_I2C3_FORCE_RESET();
+    __HAL_RCC_I2C3_RELEASE_RESET();
+    MX_I2C3_Init();                 /* HAL_I2C_Init -> MspInit restores PA8/PC11 AF */
+}
+
+/* --- Autostart countdown (power_on_boot) accessors, used by the UI --- */
+
+/* 1 while the boot auto power-on is still pending (counting down / waiting for
+ * the contract), 0 once it has armed, been aborted, or was never enabled. */
+uint8_t Boot_AutostartPending(void)
+{
+    return (g_boot_power_on && !g_output_enabled && !g_boot_autostart_aborted) ? 1U : 0U;
+}
+
+/* Whole seconds left in the countdown (ceil). 0 means the count is done and we
+ * are in the post-countdown "waiting for the PD/EPR contract" state. */
+int Boot_AutostartSecsRemaining(void)
+{
+    uint32_t total   = AUTOSTART_COUNTDOWN_S * 1000U;
+    uint32_t elapsed = (uint32_t)(HAL_GetTick() - g_boot_t0);
+    if (elapsed >= total) return 0;
+    return (int)((total - elapsed + 999U) / 1000U);
+}
+
+/* Cancel autostart for this boot only (output never arms; setting unchanged). */
+void Boot_AutostartAbort(void)
+{
+    g_boot_autostart_aborted = 1;
+    g_boot_power_on = 0;
+}
+
+/* Returns 1 if the charger currently OFFERS the saved voltage — a matching
+ * Fixed PDO (±250 mV) or a voltage within a PPS/AVS range — scanning both the
+ * SPR and EPR source-cap lists. EPR fixed PDOs (e.g. 48V) only appear here once
+ * EPR mode is active and the source has re-advertised its caps, so this is
+ * polled until it becomes true (or we time out). */
+static uint8_t boot_restore_supported(void)
+{
+    uint32_t lv = Settings_GetLastVoltage();
+    uint32_t pdos[14];
+    for (int pass = 0; pass < 2; pass++) {
+        uint8_t n = (pass == 0) ? axxpd_get_src_pdos(pdos, 14)
+                                : axxpd_get_epr_src_pdos(pdos, 14);
+        for (uint8_t i = 0U; i < n; i++) {
+            uint32_t pdo = pdos[i];
+            if (pdo == 0U) continue;
+            uint32_t type = (pdo >> 30) & 0x3U;
+            uint32_t sub  = (pdo >> 28) & 0x3U;
+            if (type == 0U) {                                   /* Fixed */
+                uint32_t mv = ((pdo >> 10) & 0x3FFU) * 50U;
+                if (lv + 250U >= mv && lv <= mv + 250U) return 1U;
+            } else if (type == 3U && sub == 0U) {               /* PPS APDO */
+                uint32_t lo = ((pdo >> 8) & 0xFFU) * 100U;
+                uint32_t hi = ((pdo >> 17) & 0xFFU) * 100U;
+                if (lv >= lo && lv <= hi) return 1U;
+            } else if (type == 3U && sub == 1U) {               /* AVS APDO */
+                uint32_t lo = ((pdo >> 8) & 0xFFU) * 100U;
+                uint32_t hi = ((pdo >> 17) & 0x1FFU) * 100U;
+                if (lo < 15000U) lo = 15000U;
+                if (lv >= lo && lv <= hi) return 1U;
+            }
+        }
+    }
+    return 0U;
+}
+
+/* Request the LOWEST fixed PDO (per USB-PD always at least 5V vSafe5V). Used as
+ * the fallback when the charger doesn't offer the saved voltage. */
+static void boot_restore_lowest(void)
+{
+    uint32_t pdos[14];
+    uint8_t  n = axxpd_get_src_pdos(pdos, 14);
+    uint32_t lowest_mv = 0U, lowest_ma = 0U;
+    for (uint8_t i = 0U; i < n; i++) {
+        uint32_t pdo = pdos[i];
+        if (pdo == 0U) continue;
+        if (((pdo >> 30) & 0x3U) == 0U) {                       /* Fixed */
+            uint32_t mv = ((pdo >> 10) & 0x3FFU) * 50U;
+            uint32_t ma = ((pdo >>  0) & 0x3FFU) * 10U;
+            if (lowest_mv == 0U || mv < lowest_mv) { lowest_mv = mv; lowest_ma = ma; }
+        }
+    }
+    if (lowest_mv >= 3300U) axxpd_request_voltage(lowest_mv, lowest_ma);
+}
 
 /* USER CODE END 0 */
 
@@ -266,7 +428,10 @@ int main(void)
   axxpd_enable_cable_emu();
 
   /* --- Boot selector + UI --- */
-  {
+  /* "Restore last V/I" takes precedence: skip the PDO selector screen entirely
+   * and go straight to the last used V/I (restored in the main loop once the
+   * contract incl. EPR settles). Otherwise run the normal boot PDO selector. */
+  if (!Settings_GetRememberBoot()) {
       int sel = BootSelector_Run();
       if (sel > 0) g_boot_pdo = (uint8_t)sel;
   }
@@ -293,19 +458,22 @@ int main(void)
       axxpd_disable_epr_intent();
   }
 
-  if (Settings_GetRememberBoot() && g_boot_pdo == 0) {
-      uint32_t lv = Settings_GetLastVoltage();
-      uint32_t la = Settings_GetLastCurrent();
-      /* Only auto-enable if the saved voltage is within range AND we
-       * have an active PD contract (charger is present and negotiated). */
-      if (lv >= 3300 && lv <= 48000 && axxpd_get_active_pdo_index() > 0) {
-          axxpd_request_voltage(lv, la);
-          Output_Enable();
-          g_output_enabled = 1;
-      }
-  }
+  /* "Restore last V/I" is applied in the main loop (g_boot_restore_vi) AFTER the
+   * contract incl. EPR has settled — so a saved EPR voltage is requested only
+   * once EPR is up. It does NOT enable the output (that's "Power on boot"). */
+  g_boot_restore_vi = (Settings_GetRememberBoot() && g_boot_pdo == 0) ? 1U : 0U;
+
+  /* Latch the "Power on at boot" one-shot.  The main loop arms the output
+   * once the PD contract (incl. EPR) has settled — see g_boot_power_on below. */
+  g_boot_power_on = Settings_GetPowerOnBoot();
 
   UI_Init();
+
+  /* "Start locked": boot into locked mode — all buttons rejected except a
+   * SELECT hold (SEL_LONG), which unlocks. */
+  if (Settings_GetStartLocked()) {
+      UI_SetLocked(1);
+  }
 
   /* USER CODE END 2 */
 
@@ -320,6 +488,7 @@ int main(void)
   IWDG->KR  = 0xCCCCU;   /* start */
 
   uint32_t boot_tick = HAL_GetTick(); /* overflow-safe reference for EPR boot */
+  g_boot_t0 = boot_tick;              /* shared reference for the autostart countdown */
 
   while (1)
   {
@@ -382,18 +551,97 @@ int main(void)
               g_epr_boot_phase = 1;
           } else if ((now - boot_tick) >= 5000U) {
               g_epr_boot_phase = 2;
-              axxpd_disable_epr_intent();
-              axxpd_ensure_contract_flag();
+              /* Don't give up on EPR while a "Restore last V/I" is still waiting
+               * for an EPR voltage to appear — it drives EPR entry itself. */
+              if (!g_boot_restore_vi) {
+                  axxpd_disable_epr_intent();
+                  axxpd_ensure_contract_flag();
+              }
           }
+      }
+
+      /* "Restore last V/I" one-shot: once the PD negotiation (incl. EPR) has
+       * settled (phase >= 2) and a contract is up, request the saved V/I.
+       * Waiting for phase >= 2 means a saved EPR voltage (e.g. 48V) is applied
+       * only after EPR has shown up. Does not enable the output. */
+      if (g_boot_restore_vi && g_epr_boot_phase >= 2
+          && axxpd_get_active_pdo_index() > 0) {
+          /* Restore the saved V/I, retrying until it takes.  Two things are
+           * required for an EPR voltage (e.g. 48V) and BOTH must happen:
+           *   1. Assert EPR intent — axxpd_enable_epr() sets cli_set_epr_intent
+           *      + EPR_MODE_ENTRY.  Without it, cli_poll() re-disables EPR
+           *      auto-enter (EPR_AUTO_ENTER_DISABLED) and entry is blocked.
+           *      (axxpd_request_voltage()'s trigger_any path does NOT set intent
+           *      — only its AVS branch does — which is why a bare request stays
+           *      at 5V at boot.)
+           *   2. Request the PDO — trigger_any performs the actual EPR entry +
+           *      PDO selection once intent is asserted.
+           * Verified on hardware: this is exactly the state the interactive
+           * :SOUR:VOLT 48V relies on.  Some chargers Soft-Reset the first EPR
+           * attempt and need a few seconds to settle after the SPR contract, so
+           * retry every 2.5s for up to 15s.  If the saved voltage still isn't
+           * reached the charger can't supply it → fall back to lowest (vSafe5V).
+           * Does not enable the output. */
+          static uint32_t s_restore_first = 0;   /* first attempt tick (0=none) */
+          static uint32_t s_restore_retry = 0;   /* last attempt tick           */
+          uint32_t sv = Settings_GetLastVoltage();
+          uint32_t nv = (uint32_t)(axxpd_get_negotiated_v() * 1000.0f);
+          if (boot_restore_supported() && (nv + 1500U >= sv)) {
+              g_boot_restore_vi = 0;             /* reached saved voltage — done */
+          } else if (s_restore_first != 0U
+                     && (uint32_t)(now - s_restore_first) >= 15000U) {
+              g_boot_restore_vi = 0;             /* charger can't supply → lowest */
+              boot_restore_lowest();
+          } else if (s_restore_first == 0U
+                     || (uint32_t)(now - s_restore_retry) >= 2500U) {
+              if (s_restore_first == 0U) s_restore_first = now;
+              s_restore_retry = now;
+              if (sv > 20000U) axxpd_enable_epr();   /* assert EPR intent first */
+              axxpd_request_voltage(sv, Settings_GetLastCurrent());
+          }
+      }
+
+      /* "Power on at boot" one-shot: arm the output once the PD negotiation
+       * (incl. EPR) has settled (phase >= 2) and a valid contract is up with
+       * no active fault.  Waits for any pending V/I restore first so it arms at
+       * the restored voltage. No voltage cap — gated only by contract + no fault. */
+      if (g_boot_power_on && !g_boot_restore_vi && !g_output_enabled && !g_hw_fault
+          && g_epr_boot_phase >= 2 && axxpd_get_active_pdo_index() > 0
+          && (uint32_t)(now - g_boot_t0) >= (AUTOSTART_COUNTDOWN_S * 1000U)) {
+          g_boot_power_on = 0;            /* fire once */
+          Output_Enable();
+          g_output_enabled = 1;
+          if (Settings_GetTimerSeconds() > 0) Timer_Start();
       }
 
       /* INA228 power monitoring (10 ms / 100 Hz) */
       if ((now - last_ina_ms) >= INA228_SAMPLE_PERIOD_MS) {
           last_ina_ms = now;
-          INA228_ReadAll(&g_ina, &g_ina_reading);
+          if (INA228_ReadAll(&g_ina, &g_ina_reading) == HAL_OK) {
+              g_ina_valid = 1;
+              g_ina_fail  = 0;
+          } else {
+              /* Read failed — the I2C bus may be wedged. Don't trust the stale
+               * value (so the screen/protection never act on a frozen reading),
+               * and after a few consecutive failures recover the bus so the
+               * reading can't stay frozen forever. */
+              g_ina_valid = 0;
+              if (g_ina_fail < 0xFFFFU) g_ina_fail++;
+              if (g_ina_fail >= INA_FAIL_RECOVER_N) {
+                  I2C3_BusRecover();
+                  g_ina_fail = 0;
+                  g_ina_recover_count++;
+                  if (g_stream_enabled) {
+                      char ebuf[32];
+                      int en = snprintf(ebuf, sizeof(ebuf), "#EVT I2C_RECOVER %lu\r\n",
+                                        (unsigned long)g_ina_recover_count);
+                      if (en > 0) CDC_Transmit_Blocking((const uint8_t *)ebuf, (uint16_t)en, 50);
+                  }
+              }
+          }
 
-          /* Software protection checks (only when output is on and no fault) */
-          if (g_output_enabled && !g_hw_fault &&
+          /* Software protection checks (only on a fresh, valid reading) */
+          if (g_output_enabled && !g_hw_fault && g_ina_valid &&
               (int32_t)(g_fault_suppress_until - now) <= 0) {
               /* OPP: check power vs settings limit */
               {
@@ -484,32 +732,38 @@ int main(void)
       /* LTC4368 fault detection via EXTI only (no polling).
        * Polling caused false triggers from SPI DMA noise coupling. */
 
-      /* UI + Graph refresh (33 ms / ~30 Hz) */
+      /* Feed graph samples — checked EVERY loop iteration (not gated by the
+       * 33 ms UI refresh) so the window interval is precise: 50/100/200 ms gives
+       * exactly a 5/10/20 s window, and the scroll speed tracks the setting.
+       * (Nesting this in the 33 ms gate quantized the interval to ~33 ms steps,
+       * so the real window was ~6.6/13.2/23 s and didn't match the label.) */
+      {
+          static uint8_t was_on_graph = 0;
+          uint8_t on_graph = (UI_GetScreen() == UI_SCREEN_GRAPH) ? 1 : 0;
+          if (on_graph && !was_on_graph) {
+              Graph_Init();
+              last_graph_sample_ms = now;
+          }
+          if (on_graph) {
+              /* window = 100 pts * interval; 5/10/30/60 s -> 50/100/300/600 ms */
+              uint32_t interval_ms;
+              switch (Settings_GetGraphWindow()) {
+                  case 1:  interval_ms = 100; break;  /* 10s */
+                  case 2:  interval_ms = 300; break;  /* 30s */
+                  case 3:  interval_ms = 600; break;  /* 60s */
+                  default: interval_ms = 50;  break;  /* 5s */
+              }
+              if ((now - last_graph_sample_ms) >= interval_ms) {
+                  last_graph_sample_ms = now;
+                  Graph_AddSample(g_ina_reading.voltage_v, g_ina_reading.current_a);
+              }
+          }
+          was_on_graph = on_graph;
+      }
+
+      /* UI refresh (33 ms / ~30 Hz) */
       if ((now - last_ui_ms) >= UI_REFRESH_PERIOD_MS) {
           last_ui_ms = now;
-          /* Feed graph samples when on graph screen — decimated to the
-           * configured window interval (50/100/200 ms for 5s/10s/20s). */
-          {
-              static uint8_t was_on_graph = 0;
-              uint8_t on_graph = (UI_GetScreen() == UI_SCREEN_GRAPH) ? 1 : 0;
-              if (on_graph && !was_on_graph) {
-                  Graph_Init();
-                  last_graph_sample_ms = now;
-              }
-              if (on_graph) {
-                  uint32_t interval_ms;
-                  switch (Settings_GetGraphWindow()) {
-                      case 0:  interval_ms = 50;  break;  /* 5s window */
-                      case 2:  interval_ms = 200; break;  /* 20s window */
-                      default: interval_ms = 100; break;  /* 10s window */
-                  }
-                  if ((now - last_graph_sample_ms) >= interval_ms) {
-                      last_graph_sample_ms = now;
-                      Graph_AddSample(g_ina_reading.voltage_v, g_ina_reading.current_a);
-                  }
-              }
-              was_on_graph = on_graph;
-          }
           UI_Update(&g_ina_reading, g_ntc_temp, g_output_enabled);
       }
 
@@ -610,8 +864,9 @@ int main(void)
               Buzzer_Click();
           }
           if ((ev == BTN_PWR_LONG || ev == BTN_PWR_SHORT) && g_hw_fault) {
-              /* Fault active — only SELECT can clear it */
-              Buzzer_Fault();
+              /* Fault active — only SELECT can clear it. Use the audible
+               * turn-off tone for the rejected ON/OFF press. */
+              Buzzer_Disable();
           } else if (ev == BTN_PWR_LONG && !UI_IsLocked()) {
               g_output_enabled = 0;
               Output_Disable();
@@ -625,12 +880,17 @@ int main(void)
                       /* Still too hot — don't allow re-enable */
                       Buzzer_Fault();
                   } else if (!g_output_enabled && UI_GetScreen() == UI_SCREEN_SETTINGS) {
-                      Buzzer_Fault();
+                      /* Can't arm the output from the settings screen — give the
+                       * normal, audible turn-off tone (the short fault chirp here
+                       * was too quiet to notice). */
+                      Buzzer_Disable();
                   } else if (!g_output_enabled &&
                              (int32_t)(HAL_GetTick() - g_output_enable_tick) < (int32_t)OUTPUT_TOGGLE_COOLDOWN_MS) {
                       /* Too soon after last enable — protect MOSFETs from
-                       * thermal stress caused by repeated gate ramp cycles */
-                      Buzzer_Fault();
+                       * thermal stress caused by repeated gate ramp cycles.
+                       * Use the audible turn-off tone (the short fault chirp
+                       * was too quiet to notice). */
+                      Buzzer_Disable();
                   } else {
                       __disable_irq();
                       g_output_enabled = !g_output_enabled;
@@ -1658,6 +1918,15 @@ uint8_t get_hw_version(void) {
 
 void App_SetTargetVoltage(uint32_t mv, uint32_t ma)
 {
+    /* Persist the user's selection so "Restore last V/I" can bring it back on
+     * the next boot.  This wrapper is only called from user-initiated UI
+     * selections (dashboard edit-confirm, preset recall); boot auto-select,
+     * the restore poll, the voltage sweep and self-test all call
+     * axxpd_request_voltage() directly and therefore never clobber the saved
+     * value.  Saving here (before the request) means a 48V/EPR selection made
+     * while still on the old non-EPR contract commits to flash immediately;
+     * once EPR is active the write defers (10s timeout / EPR drop). */
+    if (mv >= 3300U) Settings_SaveLastSettings(mv, ma);
     axxpd_request_voltage(mv, ma);
 }
 

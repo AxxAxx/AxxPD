@@ -21,6 +21,12 @@ static TIM_HandleTypeDef *s_htim = NULL;
 void Buzzer_Init(TIM_HandleTypeDef *htim)
 {
     s_htim = htim;
+    /* Invert TIM8_CH1 output polarity (active-low) so the resting/stopped PWM
+     * level is LOW. The 2N7002 buzzer FET conducts on a HIGH gate; with the
+     * default active-high polarity the pin was left HIGH after a one-pulse beep
+     * (counter rests at 0 = active), keeping the MOSFET permanently conducting.
+     * Active-low makes idle LOW (FET off); the 50%-duty tone is unaffected. */
+    htim->Instance->CCER |= TIM_CCER_CC1P;
     /* Drive PA15 low to ensure the 2N7002 buzzer MOSFET is fully off.
      * MX_TIM8_Init puts PA15 in AF mode, but TIM8 isn't started yet,
      * so the pin floats at an intermediate voltage → 2N7002 partially
@@ -112,10 +118,15 @@ void Buzzer_Fault(void)    {
     HAL_GPIO_Init(GPIOA, &gpio);
     HAL_TIM_PWM_Stop(s_htim, TIM_CHANNEL_1);
     s_htim->Instance->CR1 &= ~TIM_CR1_OPM;
-    uint32_t arr = (SystemCoreClock / BUZZER_BASE_HZ) - 1U;
+    /* 2 kHz tone for 320 ms. Derive from the 1 MHz timer clock (TIM8 has a
+     * /128 prescaler). The old code divided SystemCoreClock (128 MHz), which
+     * overflowed the 16-bit ARR and produced an inaudible ~16 Hz "tone" — that
+     * was why fault/rejection beeps couldn't be heard. */
+    uint32_t fault_hz = 2000U;
+    uint32_t arr = (BUZZER_TIM_CLOCK_HZ / fault_hz) - 1U;
     __HAL_TIM_SET_AUTORELOAD(s_htim, arr);
     __HAL_TIM_SET_COMPARE(s_htim, TIM_CHANNEL_1, arr / 2U);
-    uint32_t rep = ((uint32_t)BUZZER_BASE_HZ * 320U) / 1000U;
+    uint32_t rep = (fault_hz * 320U) / 1000U;
     if (rep == 0U) rep = 1U;
     s_htim->Instance->RCR = (uint16_t)(rep - 1U);
     s_htim->Instance->CR1 |= TIM_CR1_OPM;

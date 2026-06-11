@@ -448,6 +448,11 @@ static void decode_contract(char* buf, size_t bufsz) {
 
 static void apply_source_target() {
     if (!s_dpm || !s_pe) return;
+    /* Persist the user's voltage selection for "Restore last V/I". Done before
+     * the trigger: a fresh 48V/EPR selection is still on the old SPR contract
+     * here, so the flash write commits immediately rather than deferring under
+     * EPR. Skipped automatically (unchanged-value guard) on re-applies. */
+    if (target_mv >= 3300U) Settings_SaveLastSettings(target_mv, target_ma);
     switch (source_mode) {
         case SourceMode::AUTO:
             s_dpm->trigger_any(target_mv, target_ma);
