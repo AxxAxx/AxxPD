@@ -1464,8 +1464,8 @@ void UI_Init(void)
 }
 
 /** Main UI draw loop — called from main loop at ~30Hz.
- *  Handles edit timeout, screen transitions, fault overlay, and delegates
- *  to the per-screen draw function. */
+ *  Handles screen transitions, the fault overlay and flash messages, and
+ *  delegates to the per-screen draw function. */
 void UI_Update(INA228_Reading_t *reading, float ntc_temp, uint8_t output_on)
 {
     static uint8_t prev_edit_mode = 0;
@@ -2053,38 +2053,10 @@ void UI_HandleButton(ButtonEvent_t event)
         break;
 
     case BTN_SEL_PRESS:
-        /* PDO screen: SEL enters edit mode, then SEL again confirms selection */
-        if (current_screen == UI_SCREEN_PDOS && edit_mode) {
-            uint32_t raw[14], sorted[14];
-            uint8_t rn = axxpd_get_src_pdos(raw, 14), sn = 0;
-            for (uint8_t f=0;f<rn;f++) if (raw[f]!=0U && ((raw[f]>>30)&3)==0) sorted[sn++]=raw[f];
-            for (uint8_t f=0;f<rn;f++) if (raw[f]!=0U && ((raw[f]>>30)&3)==3 && ((raw[f]>>28)&3)==0) sorted[sn++]=raw[f];
-            for (uint8_t f=0;f<rn;f++) if (raw[f]!=0U && ((raw[f]>>30)&3)==3 && ((raw[f]>>28)&3)==1) sorted[sn++]=raw[f];
-            if (pdo_cursor < sn) {
-                uint32_t target_pdo = sorted[pdo_cursor];
-                uint8_t pos = 0;
-                for (uint8_t f=0; f<rn; f++) {
-                    if (raw[f] == target_pdo) { pos = f + 1; break; }
-                }
-                if (pos > 0) {
-                    uint32_t tp = target_pdo, tt = (tp>>30)&3;
-                    uint32_t mv = 0;
-                    if (tt == 0U) mv = ((tp>>10)&0x3FF)*50;
-                    else if (tt == 3U && ((tp>>28)&3)==0) mv = ((tp>>17)&0xFF)*100;
-                    else if (tt == 3U && ((tp>>28)&3)==1) mv = ((tp>>17)&0x1FF)*100;
-                    char msg[32];
-                    snprintf(msg, sizeof(msg), "Requesting %lu.%luV...",
-                             (unsigned long)(mv/1000), (unsigned long)((mv%1000)/100));
-                    LCD_Fill(0, STATUSBAR_H, SCREEN_W - 1, NAVBAR_Y - 1, COL_BG);
-                    LCD_PutStr(70, 80, msg, FONT_MD, COL_YELLOW, COL_BG);
-                    axxpd_request_pdo_position(pos);
-                }
-            }
-            current_screen = UI_SCREEN_DASHBOARD;
-            break;
-        }
+        /* (PDO-screen SEL confirmation lives in the edit-mode section above —
+         * this navigation section only runs with edit_mode == 0.) */
         /* Only enter edit mode on screens that have edit handlers.
-         * Graph/Energy/PDO screens don't need edit mode. */
+         * Graph/Energy screens don't need edit mode. */
         if (current_screen == UI_SCREEN_GRAPH ||
             current_screen == UI_SCREEN_ENERGY) break;
         edit_mode = 1;

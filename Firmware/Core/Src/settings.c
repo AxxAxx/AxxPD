@@ -50,7 +50,7 @@
 /* ---------- RAM mirror ---------- */
 static Settings_t settings;                   /* working copy; flash is only read at boot */
 static volatile uint8_t settings_save_pending = 0;  /* 1 = save was deferred due to EPR */
-static uint32_t settings_save_deferred_tick = 0;     /* tick when deferral started       */
+static volatile uint32_t settings_save_deferred_tick = 0;  /* tick when deferral started */
 
 /* Force-save timeout: if EPR stays active continuously for this long, we
  * save anyway.  The resulting ~100 ms CPU stall will miss one KeepAlive,
@@ -65,8 +65,8 @@ static uint32_t settings_save_deferred_tick = 0;     /* tick when deferral start
  * This avoids a full page erase+program (flash wear + multi-ms stall)
  * on every single button event.                                          */
 static volatile uint8_t settings_adjust_dirty = 0;   /* 1 = coalesced save pending */
-static uint32_t settings_adjust_last_tick  = 0;      /* tick of most recent adjustment */
-static uint32_t settings_adjust_first_tick = 0;      /* tick when dirty period started */
+static volatile uint32_t settings_adjust_last_tick  = 0;  /* tick of most recent adjustment */
+static volatile uint32_t settings_adjust_first_tick = 0;  /* tick when dirty period started */
 #define SETTINGS_ADJUST_IDLE_MS    2000U
 #define SETTINGS_ADJUST_FORCE_MS  10000U
 
