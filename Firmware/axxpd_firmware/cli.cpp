@@ -595,11 +595,14 @@ static void do_dfu() {
         g_output_enabled = 0;
     }
 
-    /* Stretch IWDG to maximum timeout (~26 seconds) so the ROM
-     * bootloader doesn't get reset mid-firmware-update. */
+    /* Stretch IWDG to its hardware maximum (4095 * 256 / 32 kHz ~= 32.8 s)
+     * so the ROM bootloader doesn't get reset mid-firmware-update. The IWDG
+     * cannot be stopped once started, so this is the longest uninterrupted
+     * window a DFU flash can take — a full-image update over slow USART can
+     * approach it; USB DFU is comfortably inside. */
     IWDG->KR  = 0x5555U;           /* unlock */
     IWDG->PR  = 7U;                /* /256 prescaler */
-    IWDG->RLR = 0xFFFU;            /* max reload */
+    IWDG->RLR = 0xFFFU;            /* max reload (4095) */
     IWDG->KR  = 0xAAAAU;           /* refresh */
 
     HAL_Delay(50);
