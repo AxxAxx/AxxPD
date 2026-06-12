@@ -210,9 +210,6 @@ static uint8_t s_pre_prev_cursor = 0xFF, s_pre_prev_scroll = 0xFF;
 static uint8_t     edit_mode = 0;
 static uint8_t     ui_locked = 0;         /* 1 = UI locked, only PWR works */
 
-static uint32_t    edit_last_input_tick = 0;
-#define EDIT_TIMEOUT_MS 5000U
-
 /* Dashboard voltage/current adjust (sub-state of edit mode on DSH).
  * SEL cycles: V coarse (1V steps) -> V fine (0.1V, PPS only) -> I (0.1A).
  * The active field's digit is drawn with inverted colors (white bg). */
@@ -1399,14 +1396,7 @@ void UI_Init(void)
  *  to the per-screen draw function. */
 void UI_Update(INA228_Reading_t *reading, float ntc_temp, uint8_t output_on)
 {
-    /* Auto-cancel edit mode after 5s of no button input — safety net so
-     * an unattended device returns to navigation mode.
-     * PDO screen is excluded: the user browses PDOs at their own pace. */
     static uint8_t prev_edit_mode = 0;
-    if (edit_mode && current_screen != UI_SCREEN_PDOS &&
-        (HAL_GetTick() - edit_last_input_tick > EDIT_TIMEOUT_MS)) {
-        edit_mode = 0;
-    }
     /* Edit mode toggling changes row highlight state across all list screens,
      * so invalidate all incremental tracking to force a full repaint. */
     if (edit_mode != prev_edit_mode) {
@@ -1626,8 +1616,6 @@ void UI_HandleButton(ButtonEvent_t event)
      * Each screen defines its own edit behavior below.
      * ================================================================ */
     if (edit_mode) {
-        edit_last_input_tick = HAL_GetTick();  /* reset auto-cancel timer */
-
         /* SEL_LONG handling is per-screen below — each screen commits
          * its own data (dashboard applies voltage, settings saves, etc.)
          * and exits edit mode. No universal handler here. */
@@ -1999,7 +1987,6 @@ void UI_HandleButton(ButtonEvent_t event)
         if (current_screen == UI_SCREEN_GRAPH ||
             current_screen == UI_SCREEN_ENERGY) break;
         edit_mode = 1;
-        edit_last_input_tick = HAL_GetTick();
         if (current_screen == UI_SCREEN_DASHBOARD) {
             /* Seed adjust targets from current negotiated contract.
              * Fallback to 5V/3A if no contract yet (e.g. no charger). */
