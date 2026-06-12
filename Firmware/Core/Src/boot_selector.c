@@ -351,8 +351,9 @@ static void draw_connecting(uint8_t dots)
     uint16_t tw   = 118U;
     uint16_t tx   = (SCREEN_W - tw) / 2U;
 
-    /* Position below splash logo (logo drawn at y=26, height=120, bottom=146) */
-    uint16_t logo_bottom = 26U + splash_logo.height;  /* 146 */
+    /* Position below splash logo (logo drawn at y=13 — vertically centered
+     * with this text as one block — height=120, bottom=133) */
+    uint16_t logo_bottom = 13U + splash_logo.height;  /* 133 */
     uint16_t ty           = logo_bottom + 8U;          /* 8px gap below logo */
 
     LCD_PutStr(tx, ty, buf, FONT_SM, COL_WHITE, COL_BG);

@@ -423,7 +423,10 @@ int main(void)
   LCD_init();
   LCD_Fill(0, 0, 319, 479, 0x0000);
   if (Settings_GetSplashScreen()) {
-      LCD_DrawImage(97, 26, (UG_BMP*)&splash_logo);
+      /* y=13 vertically centers the logo + "Connecting..." block:
+       * 120px logo + 8px gap + 18px text = 146px in a 172px screen.
+       * boot_selector.c's draw_connecting() derives its y from this. */
+      LCD_DrawImage(97, 13, (UG_BMP*)&splash_logo);
   }
 
   /* PD stack already initialized in Phase 1+2 above */
