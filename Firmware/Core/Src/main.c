@@ -832,23 +832,38 @@ int main(void)
        * LTC4368_FLT, INA228_ALERT or COMP1 OVP was already asserted when
        * the suppression window expired, no new interrupt fires.  Poll in
        * a 200ms window after the suppression closes to catch faults from
-       * e.g. turning on into a dead short or a sustained OVP. */
+       * e.g. turning on into a dead short or a sustained OVP.
+       *
+       * The INA228 ALERT pin is LATCHED (ALATCH): a transient that tripped
+       * during the suppressed PDO-transition inrush holds the pin low long
+       * after the overcurrent is gone (no-load selftest popped a false
+       * "OCP (INA228)" this way).  So on the first pass after the window
+       * closes, clear the latch and re-check on later passes — a real
+       * overcurrent re-asserts ALERT within one conversion (~1 ms).
+       * Persistent FLT/ALERT goes through HAL_GPIO_EXTI_Callback so it
+       * gets the same OCP retry policy as a live edge (soft-start retry
+       * recovers an LTC4368 that latched off on transition inrush) instead
+       * of instantly latching a fault screen. */
+      {
+          static uint8_t post_suppress_rechecked = 0;
+          if ((int32_t)(g_fault_suppress_until - now) > 0) {
+              post_suppress_rechecked = 0;  /* new suppression window opened */
+          } else if (g_output_enabled && !g_hw_fault &&
+                     (int32_t)(now - g_fault_suppress_until) < 200U) {
+              if (!post_suppress_rechecked) {
+                  post_suppress_rechecked = 1;
+                  INA228_ClearAlertLatch(&g_ina);  /* drop stale latched ALERT */
+              } else if (HAL_GPIO_ReadPin(LTC4368_FLT_GPIO_Port, LTC4368_FLT_Pin) == GPIO_PIN_RESET) {
+                  HAL_GPIO_EXTI_Callback(LTC4368_FLT_Pin);
+              } else if (HAL_GPIO_ReadPin(INA228_ALERT_GPIO_Port, INA228_ALERT_Pin) == GPIO_PIN_RESET) {
+                  HAL_GPIO_EXTI_Callback(INA228_ALERT_Pin);
+              }
+          }
+      }
       if (g_output_enabled && !g_hw_fault &&
           (int32_t)(g_fault_suppress_until - now) <= 0 &&
           (int32_t)(now - g_fault_suppress_until) < 200U) {
-          if (HAL_GPIO_ReadPin(LTC4368_FLT_GPIO_Port, LTC4368_FLT_Pin) == GPIO_PIN_RESET) {
-              g_hw_fault = 1;
-              g_fault_source = FAULT_LTC4368;
-              Output_Disable_ISR();
-              g_fault_pending_beep = 1;
-              FaultLog_Push(FAULT_LTC4368, 0, 0);
-          } else if (HAL_GPIO_ReadPin(INA228_ALERT_GPIO_Port, INA228_ALERT_Pin) == GPIO_PIN_RESET) {
-              g_hw_fault = 1;
-              g_fault_source = FAULT_INA228_OCP;
-              Output_Disable_ISR();
-              g_fault_pending_beep = 1;
-              FaultLog_Push(FAULT_INA228_OCP, 0, 0);
-          } else if (HAL_COMP_GetOutputLevel(&hcomp1) == COMP_OUTPUT_LEVEL_HIGH) {
+          if (HAL_COMP_GetOutputLevel(&hcomp1) == COMP_OUTPUT_LEVEL_HIGH) {
               g_hw_fault = 1;
               g_fault_source = FAULT_COMP_OVP;
               Output_Disable_ISR();
