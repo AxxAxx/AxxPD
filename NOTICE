@@ -28,11 +28,15 @@ ETL (Embedded Template Library)
 
 uGUI — Micro Graphics Library
   Copyright (c) Achim Dobler
-  Licensed under the MIT License
+  Licensed under a custom permissive license (see Firmware/Drivers/UGUI/LICENSE.md)
 
-STM32 HAL, CMSIS, USB Device Library
+STM32 HAL and USB Device Library
   Copyright (c) STMicroelectronics
   Licensed under BSD-3-Clause
+
+CMSIS
+  Copyright (c) Arm Limited
+  Licensed under Apache-2.0
 
 Hardware Design:
 The hardware design files (PCB schematic, layout, and enclosure CAD) are

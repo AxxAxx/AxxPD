@@ -1,3 +1,8 @@
+// Copyright 2026 Axel Johansson
+// SPDX-License-Identifier: GPL-3.0-only
+//
+// This file is part of AxxPD. See LICENSE for details.
+
 /**
  * @file    ntc.c
  * @brief   NTC thermistor temperature driver via ADC2 (PA0).

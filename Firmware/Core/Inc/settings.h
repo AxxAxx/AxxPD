@@ -1,3 +1,8 @@
+// Copyright 2026 Axel Johansson
+// SPDX-License-Identifier: GPL-3.0-only
+//
+// This file is part of AxxPD. See LICENSE for details.
+
 #ifndef __SETTINGS_H
 #define __SETTINGS_H
 

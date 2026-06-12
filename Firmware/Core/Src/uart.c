@@ -1,3 +1,8 @@
+// Copyright 2026 Axel Johansson
+// SPDX-License-Identifier: GPL-3.0-only
+//
+// This file is part of AxxPD. See LICENSE for details.
+
 /**
  * @file  uart.c
  * @brief UART driver — interrupt-driven RX, blocking TX, double-buffered lines.

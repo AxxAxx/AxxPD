@@ -359,8 +359,9 @@ AxxPD firmware includes the following third-party open-source components:
 |-----------|---------|-------------|
 | [pdsink](https://github.com/pdsink/pdsink) | MIT | USB PD 3.2 protocol stack |
 | [ETL](https://github.com/ETLCPP/etl) | MIT | Embedded Template Library |
-| [uGUI](https://github.com/AxxAxx/uGUI) | MIT | Micro Graphics Library |
-| STM32 HAL / CMSIS / USB | BSD-3-Clause | STMicroelectronics device libraries |
+| [uGUI](https://github.com/AxxAxx/uGUI) | Custom permissive (see its LICENSE.md) | Micro Graphics Library |
+| STM32 HAL / USB Device Library | BSD-3-Clause | STMicroelectronics device libraries |
+| CMSIS | Apache-2.0 | Arm Cortex-M support headers |
 
 # Disclaimer
 AxxPD is provided as-is with no warranty or guarantees on functionality or reliability. The author accepts no liability for any harm or loss resulting from its use. AxxPD handles voltages up to 48 V and currents up to 5 A -- always verify your setup and connections before enabling the output.

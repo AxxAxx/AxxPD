@@ -1,3 +1,8 @@
+// Copyright 2026 Axel Johansson
+// SPDX-License-Identifier: GPL-3.0-only
+//
+// This file is part of AxxPD. See LICENSE for details.
+
 /**
  * @file    graph.c
  * @brief   Live V/I plot for the GRAPH UI screen.

@@ -1,3 +1,8 @@
+// Copyright 2026 Axel Johansson
+// SPDX-License-Identifier: GPL-3.0-only
+//
+// This file is part of AxxPD. See LICENSE for details.
+
 #ifndef __BOOT_SELECTOR_H
 #define __BOOT_SELECTOR_H
 

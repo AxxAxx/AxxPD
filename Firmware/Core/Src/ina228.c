@@ -1,3 +1,8 @@
+// Copyright 2026 Axel Johansson
+// SPDX-License-Identifier: GPL-3.0-only
+//
+// This file is part of AxxPD. See LICENSE for details.
+
 /**
  * @file    ina228.c
  * @brief   INA228 85V, 20-bit current/voltage/power/energy monitor driver
