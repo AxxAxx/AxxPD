@@ -2711,6 +2711,7 @@ static void dispatch_one(char* line) {
             // :MEAS:ENER:RES[ET] — reset energy counters
             if (np >= 3 && match(parts[2], "RES", "RESET") && !query) {
                 INA228_ResetEnergy(&g_ina);
+                Energy_SessionReset();
                 out("Energy counters reset\r\n");
                 return;
             }

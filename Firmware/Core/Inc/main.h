@@ -81,6 +81,12 @@ void Output_Disable_ISR(void);  /* ISR-safe: GPIO+bleed only, defers flash save 
 void OVP_SetThreshold(uint32_t vbus_max_mv);
 uint8_t get_hw_version(void);
 
+/* Energy-screen session stats (peaks + runtime since accumulator reset) */
+void Energy_SessionReset(void);
+extern volatile uint32_t g_session_t0;
+extern volatile float g_peak_current_a;
+extern volatile float g_peak_power_w;
+
 /* Fault source codes (sequential — use == not &) */
 #define FAULT_NONE            0
 #define FAULT_INA228_OCP      1

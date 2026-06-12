@@ -122,6 +122,20 @@ volatile uint8_t g_fault_log_count = 0;
 INA228_t g_ina;
 INA228_Reading_t g_ina_reading = {0};
 
+/* Energy-screen session stats: tick of last accumulator reset + peaks
+ * since then. Reset together with the INA228 charge/energy accumulators
+ * via Energy_SessionReset(). */
+volatile uint32_t g_session_t0 = 0;
+volatile float g_peak_current_a = 0.0f;
+volatile float g_peak_power_w   = 0.0f;
+
+void Energy_SessionReset(void)
+{
+    g_session_t0     = HAL_GetTick();
+    g_peak_current_a = 0.0f;
+    g_peak_power_w   = 0.0f;
+}
+
 /* NTC temperature (updated at 2 Hz) */
 volatile float g_ntc_temp = 25.0f;
 
@@ -624,6 +638,11 @@ int main(void)
           if (INA228_ReadAll(&g_ina, &g_ina_reading) == HAL_OK) {
               g_ina_valid = 1;
               g_ina_fail  = 0;
+              /* Session peak tracking for the Energy screen */
+              if (g_ina_reading.current_a > g_peak_current_a)
+                  g_peak_current_a = g_ina_reading.current_a;
+              if (g_ina_reading.power_w > g_peak_power_w)
+                  g_peak_power_w = g_ina_reading.power_w;
           } else {
               /* Read failed — the I2C bus may be wedged. Don't trust the stale
                * value (so the screen/protection never act on a frozen reading),

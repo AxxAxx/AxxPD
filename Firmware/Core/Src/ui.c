@@ -804,38 +804,104 @@ static void UI_DrawPresets(float ntc_temp, uint8_t output_on)
 /*  y=77  |  1.234A   |  15.25 W |  (two columns: current + power)    */
 /*  y=103 |  0.123 Ah | 1.234 Wh |  (two columns: charge + energy)    */
 /* ------------------------------------------------------------------ */
+/* Format an accumulated charge: mAh below 1 Ah, then Ah with 3 sig figs. */
+static void fmt_charge(char *buf, size_t sz, float ah)
+{
+    if (ah < 0.0f) ah = 0.0f;
+    if (ah < 0.9995f)
+        snprintf(buf, sz, "%.0fmAh", (double)(ah * 1000.0f));
+    else if (ah < 9.995f)
+        snprintf(buf, sz, "%.3fAh", (double)ah);
+    else if (ah < 99.95f)
+        snprintf(buf, sz, "%.1fAh", (double)ah);
+    else
+        snprintf(buf, sz, "%.0fAh", (double)ah);
+}
+
+/* Format accumulated energy in Wh with 3 sig figs. */
+static void fmt_energy(char *buf, size_t sz, float wh)
+{
+    if (wh < 0.0f) wh = 0.0f;
+    if (wh < 9.995f)
+        snprintf(buf, sz, "%.3fWh", (double)wh);
+    else if (wh < 99.95f)
+        snprintf(buf, sz, "%.1fWh", (double)wh);
+    else
+        snprintf(buf, sz, "%.0fWh", (double)wh);
+}
+
 static void UI_DrawEnergy(INA228_Reading_t *r, float ntc_temp, uint8_t output_on)
 {
-    char buf[22];
+    char buf[26], num[16];
 
-    #define NRG_COL_R  165  /* X for right column (W and Wh readings) */
+    /* Row layout (content area is y=37..141):
+     *   37  SM   live V | A | W (3 columns, color-coded)
+     *   57  ---- divider
+     *   61  SM   SESSION label | hh:mm:ss runtime
+     *   81  MD   accumulated charge | energy (the headline numbers)
+     *  107  SM   avg current | avg power      (since reset)
+     *  125  SM   peak current | peak power    (since reset)  */
+    #define NRG_COL2   118
+    #define NRG_COL3   222
+    #define NRG_COL_R  165
 
     UI_DrawStatusBar(output_on, ntc_temp);
 
-    fmt_3sig(buf, sizeof(buf), r->voltage_v, "V", "   ");
-    LCD_PutStr(DRAW_X, CONTENT_Y, buf, FONT_XL, COL_YELLOW, COL_BG);
+    /* Live readings */
+    fmt_3sig(buf, sizeof(buf), r->voltage_v, "V", " ");
+    LCD_PutStr(DRAW_X, CONTENT_Y, buf, FONT_SM, COL_YELLOW, COL_BG);
+    fmt_3sig(buf, sizeof(buf), r->current_a, "A", " ");
+    LCD_PutStr(NRG_COL2, CONTENT_Y, buf, FONT_SM, COL_CURRENT, COL_BG);
+    fmt_3sig(buf, sizeof(buf), r->power_w, "W", " ");
+    LCD_PutStr(NRG_COL3, CONTENT_Y, buf, FONT_SM, COL_POWER, COL_BG);
 
-    fmt_3sig(buf, sizeof(buf), r->current_a, "A", "  ");
-    LCD_PutStr(DRAW_X, CONTENT_Y + 48, buf, FONT_MD, COL_CURRENT, COL_BG);
+    LCD_Fill(DRAW_X, CONTENT_Y + 20, SCREEN_W - DRAW_X - 1, CONTENT_Y + 20, COL_GREY);
 
-    fmt_3sig(buf, sizeof(buf), r->power_w, "W", "  ");
-    LCD_PutStr(NRG_COL_R, CONTENT_Y + 48, buf, FONT_MD, COL_POWER, COL_BG);
+    /* Session runtime since accumulator reset */
+    {
+        uint32_t secs = (HAL_GetTick() - g_session_t0) / 1000U;
+        if (secs > 359999U) secs = 359999U;  /* cap display at 99:59:59 */
+        LCD_PutStr(DRAW_X, CONTENT_Y + 24, "SESSION", FONT_SM, COL_GREY, COL_BG);
+        snprintf(buf, sizeof(buf), "%02lu:%02lu:%02lu",
+                 (unsigned long)(secs / 3600U),
+                 (unsigned long)((secs / 60U) % 60U),
+                 (unsigned long)(secs % 60U));
+        LCD_PutStr(NRG_COL3, CONTENT_Y + 24, buf, FONT_SM, COL_WHITE, COL_BG);
 
-    if (r->charge_ah >= 1000.0f)
-        snprintf(buf, sizeof(buf), "%.0f Ah ", (double)r->charge_ah);
-    else if (r->charge_ah >= 100.0f)
-        snprintf(buf, sizeof(buf), "%.1f Ah ", (double)r->charge_ah);
-    else
-        snprintf(buf, sizeof(buf), "%.3f Ah ", (double)r->charge_ah);
-    LCD_PutStr(DRAW_X, CONTENT_Y + 74, buf, FONT_MD, COL_CURRENT, COL_BG);
+        /* Accumulators — the headline numbers */
+        fmt_charge(num, sizeof(num), r->charge_ah);
+        snprintf(buf, sizeof(buf), "%-9s", num);
+        LCD_PutStr(DRAW_X, CONTENT_Y + 44, buf, FONT_MD, COL_CURRENT, COL_BG);
+        fmt_energy(num, sizeof(num), r->energy_wh);
+        snprintf(buf, sizeof(buf), "%-9s", num);
+        LCD_PutStr(NRG_COL_R, CONTENT_Y + 44, buf, FONT_MD, COL_POWER, COL_BG);
 
-    if (r->energy_wh >= 1000.0f)
-        snprintf(buf, sizeof(buf), "%.0f Wh ", (double)r->energy_wh);
-    else if (r->energy_wh >= 100.0f)
-        snprintf(buf, sizeof(buf), "%.1f Wh ", (double)r->energy_wh);
-    else
-        snprintf(buf, sizeof(buf), "%.3f Wh ", (double)r->energy_wh);
-    LCD_PutStr(NRG_COL_R, CONTENT_Y + 74, buf, FONT_MD, COL_POWER, COL_BG);
+        /* Averages since reset (meaningless in the first seconds) */
+        if (secs >= 10U) {
+            float hours = (float)secs / 3600.0f;
+            fmt_3sig(num, sizeof(num), r->charge_ah / hours, "A", "");
+            snprintf(buf, sizeof(buf), "avg %s ", num);
+        } else {
+            snprintf(buf, sizeof(buf), "avg --      ");
+        }
+        LCD_PutStr(DRAW_X, CONTENT_Y + 70, buf, FONT_SM, COL_CURRENT, COL_BG);
+        if (secs >= 10U) {
+            float hours = (float)secs / 3600.0f;
+            fmt_3sig(num, sizeof(num), r->energy_wh / hours, "W", "");
+            snprintf(buf, sizeof(buf), "avg %s ", num);
+        } else {
+            snprintf(buf, sizeof(buf), "avg --      ");
+        }
+        LCD_PutStr(NRG_COL_R, CONTENT_Y + 70, buf, FONT_SM, COL_POWER, COL_BG);
+    }
+
+    /* Peaks since reset */
+    fmt_3sig(num, sizeof(num), g_peak_current_a, "A", "");
+    snprintf(buf, sizeof(buf), "peak %s ", num);
+    LCD_PutStr(DRAW_X, CONTENT_Y + 87, buf, FONT_SM, COL_CURRENT, COL_BG);
+    fmt_3sig(num, sizeof(num), g_peak_power_w, "W", "");
+    snprintf(buf, sizeof(buf), "peak %s ", num);
+    LCD_PutStr(NRG_COL_R, CONTENT_Y + 87, buf, FONT_SM, COL_POWER, COL_BG);
 
     UI_DrawScreenIndicator();
 }
@@ -1790,6 +1856,8 @@ void UI_HandleButton(ButtonEvent_t event)
             if (event == BTN_SEL_LONG) {
                 if (g_ina.hi2c != NULL) {
                     INA228_ResetEnergy(&g_ina);
+                    Energy_SessionReset();
+                    Buzzer_Confirm();
                 }
             }
             edit_mode = 0;  /* exit edit mode, let INC/DEC navigate */
