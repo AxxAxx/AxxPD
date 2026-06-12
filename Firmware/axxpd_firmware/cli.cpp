@@ -1660,9 +1660,15 @@ static bool try_shortcut(char* line) {
 
     // on / off — enable/disable output switch (LTC4368)
     if (match1(cmd, "ON")) {
-        Output_Enable();
-        g_output_enabled = 1;
-        out("Output ON\r\n");
+        uint8_t r = Output_Enable_Guarded();
+        if (r == 1) {
+            out("Blocked: output toggle cooldown (min 1.5s between enables)\r\n");
+        } else if (r == 2) {
+            out("Blocked: board too hot - wait for thermal cooldown\r\n");
+        } else {
+            g_output_enabled = 1;
+            out("Output ON\r\n");
+        }
         return true;
     }
     if (match1(cmd, "OFF")) {
@@ -2650,8 +2656,17 @@ static void dispatch_one(char* line) {
         } else if (arg) {
             char a[4]; strncpy(a, arg, 3); a[3] = 0; uppercase(a);
             if (match1(a, "ON") || match1(a, "1")) {
-                Output_Enable(); g_output_enabled = 1;
-                out("OK\r\n");
+                uint8_t r = Output_Enable_Guarded();
+                if (r == 1) {
+                    err_push(-200, "Output toggle cooldown active");
+                    out("Error: toggle cooldown (min 1.5s between enables)\r\n");
+                } else if (r == 2) {
+                    err_push(-200, "Thermal cooldown active");
+                    out("Error: board too hot - thermal cooldown\r\n");
+                } else {
+                    g_output_enabled = 1;
+                    out("OK\r\n");
+                }
             } else if (match1(a, "OFF") || match1(a, "0")) {
                 Output_Disable(); g_output_enabled = 0;
                 out("OK\r\n");

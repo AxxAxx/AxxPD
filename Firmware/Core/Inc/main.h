@@ -76,6 +76,7 @@ void Error_Handler(void);
 
 /* USER CODE BEGIN EFP */
 void Output_Enable(void);
+uint8_t Output_Enable_Guarded(void);  /* CLI/remote: 0=OK, 1=toggle cooldown, 2=thermal */
 void Output_Disable(void);
 void Output_Disable_ISR(void);  /* ISR-safe: GPIO+bleed only, defers flash save */
 void OVP_SetThreshold(uint32_t vbus_max_mv);

@@ -1741,6 +1741,23 @@ void Output_Enable(void) {
     if (Settings_GetTimerSeconds() > 0) Timer_Start();
 }
 
+/* Guarded enable for remote (CLI/SCPI) callers — enforces the same
+ * re-enable protections as the POWER button path, which were previously
+ * bypassed when controlling the output over serial:
+ *   0 = enabled OK
+ *   1 = blocked by the MOSFET toggle cooldown (1.5 s between enables,
+ *       prevents gate-ramp thermal stress from rapid on/off cycling)
+ *   2 = blocked by thermal cooldown (board still above 75 C) */
+uint8_t Output_Enable_Guarded(void) {
+    if (!g_output_enabled && g_ntc_temp >= THERMAL_COOLDOWN_C)
+        return 2;
+    if (!g_output_enabled &&
+        (int32_t)(HAL_GetTick() - g_output_enable_tick) < (int32_t)OUTPUT_TOGGLE_COOLDOWN_MS)
+        return 1;
+    Output_Enable();
+    return 0;
+}
+
 /* ISR-safe output disable — GPIO + bleed only, no flash writes.
  * Safe to call from COMP1/EXTI ISR context. Sets g_save_on_disable
  * so the main loop can do the deferred settings save. */
