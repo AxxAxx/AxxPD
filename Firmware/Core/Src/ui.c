@@ -192,9 +192,12 @@ static uint8_t     settings_item  = 0;   /* cursor within a group (level 1) */
 static uint8_t     settings_level = 0;   /* 0=browsing groups, 1=inside a group */
 uint8_t            settings_adjusting_flag = 0;  /* 1 when adjusting a numeric value */
 
-/* Flash message — shown for 2s after an action (e.g. "Defaults loaded") */
+/* Flash message — transient text after an action (e.g. "Defaults loaded").
+ * Rendered on every screen (bottom of the content area); flash_msg_life sets
+ * the per-message display time (default 2 s). */
 static const char *flash_msg = NULL;
 static uint32_t    flash_msg_tick = 0;
+static uint32_t    flash_msg_life = 2000U;
 
 /* Fault overlay state — fault_acked lets the user dismiss the overlay
  * while g_hw_fault remains set until main.c clears the HW condition. */
@@ -1408,10 +1411,7 @@ static void UI_DrawSettings(float ntc_temp, uint8_t output_on)
     s_grp_prev_scroll = grp_scroll;
     s_set_prev_adj   = settings_adjusting_flag;
 
-    if (flash_msg != NULL) {
-        uint16_t msg_y = NAVBAR_Y - 22;
-        LCD_PutStr(DRAW_X, msg_y, (char *)flash_msg, FONT_SM, COL_GREEN, COL_BG);
-    }
+    /* flash_msg is rendered globally in UI_Update for all screens */
 
     UI_DrawScreenIndicator();
 }
@@ -1473,9 +1473,28 @@ void UI_Update(INA228_Reading_t *reading, float ntc_temp, uint8_t output_on)
         prev_edit_mode = edit_mode;
     }
 
-    /* Flash messages auto-expire after 2 seconds */
-    if (flash_msg != NULL && (HAL_GetTick() - flash_msg_tick) >= 2000U) {
+    /* One-time warning when saved settings were corrupt at boot and the
+     * device fell back to defaults (OCP/OVP, presets, calibration lost).
+     * Previously this happened silently. */
+    {
+        extern volatile uint8_t g_settings_reset_warning;
+        if (g_settings_reset_warning) {
+            g_settings_reset_warning = 0;
+            flash_msg = "Settings reset to defaults!";
+            flash_msg_tick = HAL_GetTick();
+            flash_msg_life = 8000U;
+            Buzzer_Warn();
+        }
+    }
+
+    /* Flash messages auto-expire after their display time */
+    if (flash_msg != NULL && (HAL_GetTick() - flash_msg_tick) >= flash_msg_life) {
         flash_msg = NULL;
+        flash_msg_life = 2000U;  /* restore default for the next message */
+        /* wipe the message line and force a repaint of list screens */
+        LCD_Fill(0, NAVBAR_Y - 22, SCREEN_W - 1, NAVBAR_Y - 1, COL_BG);
+        s_pdo_prev_cursor = 0xFF; s_pdo_prev_scroll = 0xFF; s_pdo_prev_count = 0xFF;
+        s_set_prev_group = 0xFF;
     }
 
     /* Screen transition: instant clear, no animation */
@@ -1606,6 +1625,14 @@ void UI_Update(INA228_Reading_t *reading, float ntc_temp, uint8_t output_on)
             break;
         default:
             break;
+        }
+
+        /* Transient flash message — drawn over the bottom of the content
+         * area on every screen (was settings-only, which hid messages
+         * raised elsewhere, e.g. the corrupt-settings boot warning). */
+        if (flash_msg != NULL) {
+            LCD_PutStr(DRAW_X, NAVBAR_Y - 22, (char *)flash_msg,
+                       FONT_SM, COL_GREEN, COL_BG);
         }
         } /* end tool_active else */
 

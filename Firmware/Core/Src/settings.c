@@ -175,6 +175,14 @@ void Settings_LoadDefaults(void)
 }
 
 /* ------------------------------------------------------------------ */
+
+/* Set when saved settings were found CORRUPT at boot (CRC/magic mismatch on
+ * a page that was not blank) and defaults were loaded.  The UI shows a
+ * one-time warning so the user knows their protection thresholds, presets
+ * and calibration were reset — previously this happened silently.  A blank
+ * page (first boot / mass erase, all 0xFF) loads defaults without warning. */
+volatile uint8_t g_settings_reset_warning = 0;
+
 void Settings_Init(void)
 {
     CRC_Init();
@@ -182,6 +190,12 @@ void Settings_Init(void)
     /* Copy settings from flash into the RAM mirror */
     const uint8_t *flash = (const uint8_t *)SETTINGS_FLASH_ADDR;
     memcpy(&settings, flash, sizeof(Settings_t));
+
+    /* Distinguish a never-written page (all 0xFF) from real corruption */
+    uint8_t page_blank = 1;
+    for (size_t i = 0; i < sizeof(Settings_t); i++) {
+        if (flash[i] != 0xFFU) { page_blank = 0; break; }
+    }
 
     /* Read the CRC that was written alongside the settings */
     uint32_t stored_crc;
@@ -191,14 +205,19 @@ void Settings_Init(void)
      * first-boot case where flash is erased (all 0xFF). */
     uint32_t calc_crc = CRC_Calculate(&settings, sizeof(Settings_t));
 
-    if (calc_crc != stored_crc) {
-        Settings_LoadDefaults();
-    }
+    uint8_t invalid = (calc_crc != stored_crc) ? 1U : 0U;
 
     /* Validate magic byte — catches flash that passes CRC by coincidence
      * (e.g. a struct layout change between firmware versions). */
     if (settings.magic != SETTINGS_MAGIC) {
+        invalid = 1;
+    }
+
+    if (invalid) {
         Settings_LoadDefaults();
+        if (!page_blank) {
+            g_settings_reset_warning = 1;
+        }
     }
 
     /* Bounds-check fields that index into fixed-size arrays */
