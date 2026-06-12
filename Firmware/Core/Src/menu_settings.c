@@ -45,7 +45,7 @@ const MI_Entry g_mi_table[] = {
     /* System group (actions — no flash field) */
     { MI_LOAD_DEFAULT,    MI_NO_FLASH,                                    "Load defaults"    },
     { MI_SAVE_REBOOT,     MI_NO_FLASH,                                    "Save & Reboot"    },
-    { MI_EXIT_NO_SAVE,    MI_NO_FLASH,                                    "Exit"             },
+    { MI_EXIT_NO_SAVE,    MI_NO_FLASH,                                    "Exit no save"     },
 };
 
 const uint8_t g_mi_table_size = sizeof(g_mi_table) / sizeof(g_mi_table[0]);
