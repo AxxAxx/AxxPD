@@ -861,7 +861,7 @@ static void UI_DrawEnergy(INA228_Reading_t *r, float ntc_temp, uint8_t output_on
     {
         uint32_t secs = (HAL_GetTick() - g_session_t0) / 1000U;
         if (secs > 359999U) secs = 359999U;  /* cap display at 99:59:59 */
-        LCD_PutStr(DRAW_X, CONTENT_Y + 24, "SESSION", FONT_SM, COL_GREY, COL_BG);
+        LCD_PutStr(DRAW_X, CONTENT_Y + 24, "ENERGY SESSION", FONT_SM, COL_CCCV, COL_BG);
         snprintf(buf, sizeof(buf), "%02lu:%02lu:%02lu",
                  (unsigned long)(secs / 3600U),
                  (unsigned long)((secs / 60U) % 60U),
