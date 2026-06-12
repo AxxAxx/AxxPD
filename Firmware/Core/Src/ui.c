@@ -1252,7 +1252,10 @@ static void UI_DrawSettings(float ntc_temp, uint8_t output_on)
             uint8_t was = (i == s_set_prev_group);
             if (!full && sel == was) continue;
             uint16_t y = CONTENT_Y + r * row_h;
-            uint16_t bg = sel ? COL_SEL_BG : COL_BG;
+            /* Highlight only once SELECT has entered the menu (edit mode) —
+             * same convention as the PDO screen, where the arrow tracks the
+             * cursor and the red row appears only after SELECT. */
+            uint16_t bg = (sel && edit_mode) ? COL_SEL_BG : COL_BG;
             uint16_t fg = COL_WHITE;
             snprintf(buf, sizeof(buf), "%c %-20s", sel ? '>' : ' ', g_menu_groups[i].title);
             LCD_Fill(0, y, SCREEN_W - 1, y + row_h - 1, bg);
