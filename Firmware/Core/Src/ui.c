@@ -2026,6 +2026,14 @@ void UI_HandleButton(ButtonEvent_t event)
                             st_step       = 0;
                             st_count      = 0;
                             st_pdo_count  = 0;
+                        } else if (mi == MI_VERSION) {
+                            /* Read-only — the value column already shows
+                             * FW+HW; SEL just flashes the full string. */
+                            static char ver_msg[32];
+                            snprintf(ver_msg, sizeof(ver_msg), "FW %s  HW rev %u",
+                                     FW_Version(), (unsigned)get_hw_version());
+                            flash_msg = ver_msg;
+                            flash_msg_tick = HAL_GetTick();
                         } else if (Menu_IsNumeric(mi)) {
                             /* Numeric items: SEL cycles forward (same as INC) */
                             Menu_AdjustNumeric(mi, +1);

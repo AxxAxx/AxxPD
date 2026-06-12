@@ -73,6 +73,9 @@ static inline float temp_display(float celsius) {
 
 #define FW_VERSION "0.2.0"
 
+/* C-linkage accessor for the UI (Settings > System > Version) */
+extern "C" const char* FW_Version(void) { return FW_VERSION; }
+
 /* SCPI: Manufacturer,Model,Serial,FirmwareVersion. The serial field is the
  * MCU's 96-bit unique device ID (UID base 0x1FFF7590 on STM32G4) so every
  * unit identifies uniquely in multi-device test rigs. Built in cli_init(). */

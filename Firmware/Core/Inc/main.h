@@ -81,6 +81,7 @@ void Output_Disable(void);
 void Output_Disable_ISR(void);  /* ISR-safe: GPIO+bleed only, defers flash save */
 void OVP_SetThreshold(uint32_t vbus_max_mv);
 uint8_t get_hw_version(void);
+const char* FW_Version(void);  /* firmware version string (defined in cli.cpp) */
 
 /* Energy-screen session stats (peaks + runtime since accumulator reset) */
 void Energy_SessionReset(void);

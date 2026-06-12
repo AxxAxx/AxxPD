@@ -103,6 +103,7 @@ enum {
     MI_LOAD_DEFAULT     = 700,
     MI_SAVE_REBOOT      = 701,
     MI_EXIT_NO_SAVE     = 702,
+    MI_VERSION          = 703,  /* read-only: shows FW + HW version */
 };
 
 #define MI_NO_FLASH 0xFF  /* system actions have no flash field */

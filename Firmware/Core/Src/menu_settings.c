@@ -9,6 +9,7 @@
  */
 
 #include "settings.h"
+#include "main.h"   /* get_hw_version() / FW_Version() for the Version item */
 #include <stddef.h>
 #include <string.h>
 #include <stdio.h>
@@ -48,6 +49,7 @@ const MI_Entry g_mi_table[] = {
     { MI_CAL_V,              MI_NO_FLASH,                                 "V offset"         },
     { MI_CAL_I,              MI_NO_FLASH,                                 "I offset"         },
     /* System group (actions — no flash field) */
+    { MI_VERSION,         MI_NO_FLASH,                                    "Version"          },
     { MI_LOAD_DEFAULT,    MI_NO_FLASH,                                    "Load defaults"    },
     { MI_SAVE_REBOOT,     MI_NO_FLASH,                                    "Save & Reboot"    },
     { MI_EXIT_NO_SAVE,    MI_NO_FLASH,                                    "Exit no save"     },
@@ -84,7 +86,7 @@ static const uint16_t calibration_items[] = {
 };
 
 static const uint16_t system_items[] = {
-    MI_LOAD_DEFAULT, MI_SAVE_REBOOT, MI_EXIT_NO_SAVE
+    MI_VERSION, MI_LOAD_DEFAULT, MI_SAVE_REBOOT, MI_EXIT_NO_SAVE
 };
 
 const MenuGroup g_menu_groups[] = {
@@ -203,6 +205,13 @@ const char* Menu_GetValueStr(uint16_t mi)
     /* Temperature unit — display "C" or "F" instead of YES/NO */
     if (mi == MI_TEMP_UNIT) {
         return Settings_GetTempFahrenheit() ? "F" : "C";
+    }
+
+    /* Version — read-only: firmware version + hardware revision straps */
+    if (mi == MI_VERSION) {
+        static char vbuf[12];
+        snprintf(vbuf, sizeof(vbuf), "%s HW%u", FW_Version(), (unsigned)get_hw_version());
+        return vbuf;
     }
 
     const MI_Entry *entry = Menu_FindMI(mi);
