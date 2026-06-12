@@ -73,8 +73,18 @@ static inline float temp_display(float celsius) {
 
 #define FW_VERSION "0.2.0"
 
-static const char* IDN_STRING =
+/* SCPI: Manufacturer,Model,Serial,FirmwareVersion. The serial field is the
+ * MCU's 96-bit unique device ID (UID base 0x1FFF7590 on STM32G4) so every
+ * unit identifies uniquely in multi-device test rigs. Built in cli_init(). */
+static char IDN_STRING[64] =
     "AxxPD,USBPD-Sink,0," FW_VERSION;
+
+static void idn_build(void) {
+    const volatile uint32_t* uid = reinterpret_cast<const volatile uint32_t*>(0x1FFF7590UL);
+    snprintf(IDN_STRING, sizeof(IDN_STRING), "AxxPD,USBPD-Sink,%08lX%08lX%08lX,%s",
+             (unsigned long)uid[2], (unsigned long)uid[1], (unsigned long)uid[0],
+             FW_VERSION);
+}
 
 // -----------------------------------------------------------------------------
 // USB CDC output (replaces UART)
@@ -2976,6 +2986,7 @@ void cli_init(pd::Port* port, pd::PE* pe, AppDPM* dpm, UcpdDriver* driver) {
     source_mode = SourceMode::AUTO;
     user_wants_epr = false;
     events_enabled = true;
+    idn_build();
     err_clear();
     last_rdo_contracted = 0;
     last_in_epr = false;
