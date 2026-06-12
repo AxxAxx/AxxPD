@@ -68,6 +68,16 @@ float NTC_ReadTemperature(void)
     /* R_ntc from voltage divider */
     float r_ntc = NTC_RPULLUP * (float)raw / (NTC_VREF_ADC - (float)raw);
 
+    /* Physically impossible resistance = broken sensor, not a temperature.
+     * A nearly-open NTC (cold joint, cracked part) reads as megaohms, which
+     * the beta equation maps to a plausible-looking arctic temperature —
+     * silently disarming thermal protection. 1 MOhm corresponds to roughly
+     * -60 C and 100 Ohm to far beyond +200 C; nothing on this board can be
+     * there for real, so treat both extremes as a sensor fault. */
+    if (r_ntc > 1.0e6f || r_ntc < 100.0f) {
+        return -273.15f;
+    }
+
     /* Steinhart-Hart simplified (beta equation) */
     float inv_t = (1.0f / NTC_T0) + (1.0f / NTC_BETA) * logf(r_ntc / NTC_R0);
     float temp_k = 1.0f / inv_t;
