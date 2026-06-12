@@ -4,6 +4,8 @@ AxxPD provides a dual-layer command interface over USB CDC serial (115200 baud).
 
 **Connection:** USB-C data port. The serial terminal must be enabled in Settings > System > Serial Terminal (default: ON).
 
+**DTR required:** AxxPD only emits CDC output while the host has the port open with DTR asserted. Serial libraries (pyserial) and terminal programs assert DTR on open by default; if you see no responses or events, check that your client raises DTR.
+
 **Conventions:**
 - Commands are case-insensitive
 - Numeric arguments accept V/mV/A/mA suffixes (e.g. `setpps 7500mV 2A`)
@@ -143,11 +145,11 @@ seq run                 # execute the sequence
 
 | Command | Description |
 |---------|-------------|
-| `stream on` | Enable 20 Hz CSV data streaming |
+| `stream on [rate_hz]` | Enable CSV data streaming (default 20 Hz, 1-1000 Hz, e.g. `stream on 100`) |
 | `stream off` | Disable data streaming |
-| `stream` | Toggle streaming |
+| `stream` | Toggle streaming at the current rate |
 
-When streaming is enabled, lines prefixed with `#S` are emitted at 20 Hz. See [Data Stream Format](#data-stream-format) for the field layout.
+When streaming is enabled, lines prefixed with `#S` are emitted at the configured rate. See [Data Stream Format](#data-stream-format) for the field layout.
 
 ### Diagnostics
 
@@ -158,7 +160,7 @@ When streaming is enabled, lines prefixed with `#S` are emitted at 20 Hz. See [D
 | `dfu` | Enter STM32 DFU bootloader for firmware update |
 | `trace on\|off` | Enable/disable diagnostic prints ([CC]/[RX]/[TX] + PE state) |
 
-**Selftest:** Walks every advertised PDO: one step per Fixed PDO, min/mid/max for each PPS and AVS APDO. Auto-enters EPR if the source supports it. Takes 10-30 seconds. Do not have a load on VBUS during the test (the output voltage jumps between all PDO voltages). Responds with PASS/FAIL per step.
+**Selftest:** Walks every advertised PDO: one step per Fixed PDO, min/mid/max for each PPS and AVS APDO, plus 5 random voltage steps. Auto-enters EPR if the source supports it. Takes roughly 20-60 seconds. `selftest` first prints a safety warning and waits for a confirmation line — type `OK` to start (anything else aborts). Do not have a load on VBUS during the test (the output voltage jumps between all PDO voltages). The output bleed resistor is engaged during the run so the reported measurements track VBUS on downward steps. Responds with PASS/FAIL per step (judged on the negotiated contract) and prints the measured voltage for each.
 
 ---
 
@@ -206,7 +208,7 @@ Standard Commands for Programmable Instruments. Use these for automated scriptin
 | `:MEAS:POW?` | Measured power | Watts |
 | `:MEAS:TEMP?` | INA228 die and board temperatures | |
 | `:MEAS:ENER?` | Energy accumulators | Wh and Ah |
-| `:MEAS:ENER:RES` | Reset energy counters | |
+| `:MEAS:ENER:RES` | Reset energy counters (also resets the Energy screen's session runtime and peak stats) | |
 
 ### :PD
 

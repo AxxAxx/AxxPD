@@ -188,7 +188,7 @@ AxxPD has a 1.47" 320x172 IPS TFT display (ST7789V, SPI at 32 MHz) and 4 buttons
 Large V (yellow) / I (red) / W (green) readout. SET voltage and current targets. CC/CV mode indicator. Live UP/DOWN adjustment with blinking cursor in edit mode.
 
 **Screen 2 -- PDOs:**
-Scrollable list of source capability PDOs including EPR AVS entries. Cable e-marker info.
+Scrollable list of source capability PDOs including EPR AVS entries. The cursor starts on the currently active contract. Cable e-marker info.
 
 **Screen 3 -- Graph:**
 Rolling V/I plot (10 s window). Column-based rendering for fast SPI updates. 15 Hz throttle.
@@ -200,7 +200,7 @@ Rolling V/I plot (10 s window). Column-based rendering for fast SPI updates. 15 
 Session dashboard: live V/A/W, runtime since reset, accumulated mAh/Wh, plus average and peak current/power for the session. Long-press SELECT to reset everything.
 
 **Screen 6 -- Settings:**
-6 groups with scrollable menus: Mode, Sound, Protection, Tools, Calibration, System.
+7 groups with scrollable menus: Mode, Display, Sound, Protection, Tools, Calibration, System.
 
 # WebSerial Dashboard
 A browser-based dashboard is included at [`Tools/AxxPD_Dashboard.html`](./Tools/AxxPD_Dashboard.html). Open it in Chrome or Edge 89+ and connect to AxxPD via USB-C. No drivers or installs required. The dashboard provides:
@@ -247,7 +247,7 @@ Key commands:
 | `on` / `off` | Enable / disable output |
 | `epr` / `spr` | Enter / leave EPR mode |
 | `meas` | Read voltage, current, power, temperature |
-| `stream on/off` | Toggle 20 Hz CSV telemetry |
+| `stream on [hz]` / `stream off` | CSV telemetry (default 20 Hz, up to 1 kHz) |
 | `selftest` | Walk all PDOs and report pass/fail |
 | `protect ocp <A>` | Set OCP threshold |
 | `protect ovp <V>` | Set OVP threshold |
@@ -295,26 +295,33 @@ Settings are accessed via the Settings screen (Screen 6) using the 4-button navi
 
 | Group | Setting | Description | Default |
 |-------|---------|-------------|---------|
-| Mode | PD Mode | AUTO / FIX / PPS / AVS | AUTO |
-| Mode | Cable Emu | Cable e-marker emulation for EPR | ON |
-| Sound | Buzzer | Enable/disable buzzer | ON |
-| Sound | Alert Tones | Alert sound on fault | ON |
-| Protection | OCP Threshold | Over-current protection limit | 5.5 A |
-| Protection | OVP Threshold | Over-voltage protection (COMP1+DAC3 backup) | Auto |
-| Protection | OPP Threshold | Over-power protection limit | OFF |
-| Protection | Timer Shutoff | Auto-disable output after countdown | OFF |
-| Protection | Ah Limit | Disable output at charge limit | OFF |
-| Protection | Wh Limit | Disable output at energy limit | OFF |
-| Protection | Retry Policy | Latch / 1-retry / 3-retry on fault | 3-retry |
-| Tools | Selftest | Walk all source PDOs, report pass/fail | -- |
-| Tools | Stream | Toggle USB CDC data streaming | OFF |
-| Calibration | V Offset | Voltage measurement offset | 0 |
-| Calibration | I Offset | Current measurement offset | 0 |
-| Calibration | Shunt Value | Current sense resistor value | 6.8 mOhm |
-| System | Brightness | Display backlight level | 100% |
-| System | Serial Terminal | Enable USB CDC serial interface | ON |
-| System | Reboot | Reboot device | -- |
-| System | DFU | Enter USB DFU bootloader | -- |
+| Mode | Restore last V/I | Re-request the last used voltage/current at boot | OFF |
+| Mode | Power on boot | Auto-arm the output once the PD contract settles (5 s abort countdown) | OFF |
+| Mode | Start locked | Boot with the UI locked | OFF |
+| Mode | Boot PDO select | Show the boot PDO selector screen | ON |
+| Mode | Serial terminal | Enable USB CDC serial interface | ON |
+| Mode | Splash screen | Show splash logo at boot | ON |
+| Display | Temp unit | Celsius / Fahrenheit | Celsius |
+| Display | Graph window | Graph screen time window | 10 s |
+| Sound | Buzzer | Enable/disable buzzer (fault tones always play) | ON |
+| Sound | Startup beep | Beep at boot | ON |
+| Protection | OCP limit | Over-current protection limit | 5.5 A |
+| Protection | OVP limit | Over-voltage protection (COMP1+DAC backup) | 55 V |
+| Protection | OPP limit | Over-power protection limit | OFF |
+| Protection | Timer shutoff | Auto-disable output after countdown | OFF |
+| Protection | Ah limit | Disable output at charge limit | OFF |
+| Protection | Wh limit | Disable output at energy limit | OFF |
+| Protection | OCP retry | Latch / 1-retry / 3-retry on fault | 3-retry |
+| Protection | CC Thresh | Charge-complete current threshold | OFF |
+| Protection | CC Hold | Charge-complete hold time | 30 s |
+| Tools | Charger info | Show charger identity and capabilities | -- |
+| Tools | Cable info | Show cable e-marker info | -- |
+| Tools | Self-test | Walk all source PDOs, report pass/fail | -- |
+| Calibration | V offset | Voltage measurement offset | 0 |
+| Calibration | I offset | Current measurement offset | 0 |
+| System | Load defaults | Restore factory settings | -- |
+| System | Save & Reboot | Save settings to flash and reboot | -- |
+| System | Exit no save | Leave the settings menu | -- |
 
 # Repository Structure
 ```
