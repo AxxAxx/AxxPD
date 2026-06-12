@@ -103,9 +103,12 @@ void Buzzer_Off(void)
     }
 }
 
-/* Named presets — duration in ms, timer handles exact cycle count */
-void Buzzer_Click(void)    { Buzzer_Beep(BUZZER_BASE_HZ, 10);  }
-void Buzzer_Confirm(void)  { Buzzer_Beep(BUZZER_BASE_HZ, 20);  }
+/* Named presets — duration in ms, timer handles exact cycle count.
+ * Perceived loudness of the piezo scales with burst length: 10 ms (10
+ * cycles at 1 kHz) barely rang up and clicks were much quieter than the
+ * 60-120 ms ON/OFF beeps, so Click is 20 ms with Confirm above it. */
+void Buzzer_Click(void)    { Buzzer_Beep(BUZZER_BASE_HZ, 20);  }
+void Buzzer_Confirm(void)  { Buzzer_Beep(BUZZER_BASE_HZ, 35);  }
 void Buzzer_Fault(void)    {
     /* Always play fault tone regardless of buzzer setting — safety critical */
     if (s_htim == NULL || BUZZER_BASE_HZ == 0U) return;
