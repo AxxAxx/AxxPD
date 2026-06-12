@@ -342,7 +342,11 @@ static bool parse_numeric_unit(const char* s, char base_letter /*'V' or 'A'*/,
         if (milli) scale = 1.0f;
     }
     float scaled = val * scale;
-    if (scaled < 0.0f || scaled > 1e6f) return false;
+    /* Inverted comparison so NaN/inf fail: "set nanV" parses to NaN via
+     * strtof, and NaN compares false against any bound, so the old
+     * (scaled < 0 || scaled > 1e6) check let it through to an undefined
+     * uint32_t cast that was used directly as a voltage target. */
+    if (!(scaled >= 0.0f && scaled <= 1e6f)) return false;
     *out_milli = static_cast<uint32_t>(scaled + 0.5f);
     return true;
 }
