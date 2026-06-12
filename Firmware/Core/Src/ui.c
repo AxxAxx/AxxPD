@@ -1349,6 +1349,32 @@ static void UI_DrawSettings(float ntc_temp, uint8_t output_on)
     UI_DrawScreenIndicator();
 }
 
+/* Map the active contract's 1-based source_caps position to its row in
+ * the PDO screen's display order (Fixed, then PPS, then AVS — must match
+ * the three-pass sort in UI_DrawPDOs).  Returns 0 if no contract. */
+static uint8_t UI_ActivePdoDisplayIndex(void)
+{
+    uint32_t raw[14];
+    uint8_t rn = axxpd_get_src_pdos(raw, 14);
+    uint8_t active = axxpd_get_active_pdo_index();  /* 1-based, 0 = none */
+    if (active == 0U || active > rn) return 0U;
+    uint8_t disp = 0;
+    for (uint8_t pass = 0; pass < 3U; pass++) {
+        for (uint8_t f = 0; f < rn; f++) {
+            if (raw[f] == 0U) continue;
+            uint32_t type = (raw[f] >> 30U) & 0x3U;
+            uint32_t sub  = (raw[f] >> 28U) & 0x3U;
+            uint8_t in_pass = (pass == 0U) ? (type == 0U)
+                            : (pass == 1U) ? (type == 3U && sub == 0U)
+                                           : (type == 3U && sub == 1U);
+            if (!in_pass) continue;
+            if (f == (uint8_t)(active - 1U)) return disp;
+            disp++;
+        }
+    }
+    return 0U;
+}
+
 /* ================================================================== */
 /*  Public API                                                         */
 /* ================================================================== */
@@ -1403,6 +1429,11 @@ void UI_Update(INA228_Reading_t *reading, float ntc_temp, uint8_t output_on)
         s_pdo_prev_cursor = 0xFF; s_pdo_prev_scroll = 0xFF; s_pdo_prev_count = 0xFF;
         s_pre_prev_cursor = 0xFF; s_pre_prev_scroll = 0xFF;
         s_set_prev_group = 0xFF;
+        /* Start the PDO cursor on the active contract (e.g. the PDO picked
+         * at the boot selector) instead of always on row 0. */
+        if (current_screen == UI_SCREEN_PDOS) {
+            pdo_cursor = UI_ActivePdoDisplayIndex();
+        }
         /* Always enter settings at the top-level group list */
         if (current_screen == UI_SCREEN_SETTINGS) {
             settings_level = 0;
