@@ -32,6 +32,12 @@ extern volatile uint32_t g_fault_suppress_until;  /* HAL_GetTick() deadline — 
  * ---------------------------------------------------------------------- */
 /* All timing values are in units of the 5ms SysTick polling interval. */
 #define DEBOUNCE_TICKS        2U    /* 10ms  — PCB has hardware RC debounce, software can be short */
+#define RELEASE_TICKS         4U    /* 20ms  — consecutive low samples required to accept a release.
+                                     * Without this, one chattery low sample mid-press fired the
+                                     * SEL/PWR short-press early AND again on the real release
+                                     * (double-fire), or re-confirmed INC/DEC for a double step. */
+#define LOCKOUT_TICKS         6U    /* 30ms  — ignore the button right after a release so trailing
+                                     * contact chatter can't start a new press */
 #define LONG_PRESS_TICKS      120U  /* 600ms — threshold for PWR/SEL long-press */
 #define REPEAT_INIT_TICKS     60U   /* 300ms — hold delay before first auto-repeat (INC/DEC) */
 #define REPEAT_INTERVAL_TICKS 16U   /* 80ms  — interval between subsequent repeats */
@@ -61,6 +67,8 @@ typedef struct {
     BtnState_t      state;
     uint16_t        ticks;          /* ticks in current sub-state */
     uint16_t        hold_ticks;     /* total ticks since confirmed press */
+    uint16_t        rel_ticks;      /* consecutive low samples while pressed */
+    uint16_t        lockout;        /* post-release lockout countdown */
     ButtonEvent_t   ev_press;       /* event after debounce (or on release for PWR/SEL) */
     ButtonEvent_t   ev_long;        /* event at long-press threshold (BTN_NONE = disabled) */
     ButtonEvent_t   ev_repeat;      /* auto-repeat event while held (BTN_NONE = disabled) */
@@ -145,7 +153,10 @@ void Buttons_Tick(void)
         switch (b->state) {
 
         case ST_IDLE:
-            if (high) {
+            if (b->lockout > 0U) {
+                /* Post-release lockout — swallow trailing contact chatter */
+                b->lockout--;
+            } else if (high) {
                 b->state = ST_DEBOUNCE;
                 b->ticks = 0U;
             }
@@ -159,6 +170,7 @@ void Buttons_Tick(void)
                 /* Confirmed press */
                 b->state = ST_PRESSED;
                 b->hold_ticks = 0U;
+                b->rel_ticks  = 0U;
                 if (b->press_on_confirm) {
                     evt_push(b->ev_press);
                 }
@@ -168,39 +180,56 @@ void Buttons_Tick(void)
         case ST_PRESSED:
             b->hold_ticks++;
             if (!high) {
-                /* Released */
-                if (!b->press_on_confirm) {
-                    /* PWR: short press fires on release */
-                    evt_push(b->ev_press);
+                /* Possible release — debounce it: a single low sample from
+                 * contact chatter must not end the press (it double-fired
+                 * SEL/PWR and double-stepped INC/DEC before). */
+                if (++b->rel_ticks >= RELEASE_TICKS) {
+                    if (!b->press_on_confirm) {
+                        /* PWR/SEL: short press fires on release */
+                        evt_push(b->ev_press);
+                    }
+                    b->state = ST_IDLE;
+                    b->lockout = LOCKOUT_TICKS;
                 }
-                b->state = ST_IDLE;
-            } else if (b->ev_long != BTN_NONE &&
-                       b->hold_ticks >= LONG_PRESS_TICKS) {
-                /* Long press threshold reached (PWR) */
-                evt_push(b->ev_long);
-                b->state = ST_LONG_FIRED;
-                b->ticks = 0U;
-            } else if (b->ev_repeat != BTN_NONE &&
-                       b->hold_ticks >= REPEAT_INIT_TICKS) {
-                /* First repeat (INC/DEC held long enough) */
-                evt_push(b->ev_repeat);
-                b->state = ST_LONG_FIRED;
-                b->ticks = 0U;
+            } else {
+                b->rel_ticks = 0U;
+                if (b->ev_long != BTN_NONE &&
+                    b->hold_ticks >= LONG_PRESS_TICKS) {
+                    /* Long press threshold reached (PWR) */
+                    evt_push(b->ev_long);
+                    b->state = ST_LONG_FIRED;
+                    b->ticks = 0U;
+                    b->rel_ticks = 0U;
+                } else if (b->ev_repeat != BTN_NONE &&
+                           b->hold_ticks >= REPEAT_INIT_TICKS) {
+                    /* First repeat (INC/DEC held long enough) */
+                    evt_push(b->ev_repeat);
+                    b->state = ST_LONG_FIRED;
+                    b->ticks = 0U;
+                    b->rel_ticks = 0U;
+                }
             }
             break;
 
         case ST_LONG_FIRED:
             if (!high) {
-                /* Released — no additional event */
-                b->state = ST_IDLE;
-            } else if (b->ev_repeat != BTN_NONE && b->hold_ticks < MAX_HOLD_TICKS) {
-                /* Auto-repeat mode (INC/DEC), stop after MAX_HOLD_TICKS */
-                if (++b->ticks >= REPEAT_INTERVAL_TICKS) {
-                    b->ticks = 0U;
-                    evt_push(b->ev_repeat);
+                /* Possible release — same debounce as ST_PRESSED */
+                if (++b->rel_ticks >= RELEASE_TICKS) {
+                    b->state = ST_IDLE;
+                    b->lockout = LOCKOUT_TICKS;
                 }
+            } else {
+                b->rel_ticks = 0U;
+                b->hold_ticks++;  /* keep counting so MAX_HOLD_TICKS can actually stop repeats */
+                if (b->ev_repeat != BTN_NONE && b->hold_ticks < MAX_HOLD_TICKS) {
+                    /* Auto-repeat mode (INC/DEC), stop after MAX_HOLD_TICKS */
+                    if (++b->ticks >= REPEAT_INTERVAL_TICKS) {
+                        b->ticks = 0U;
+                        evt_push(b->ev_repeat);
+                    }
+                }
+                /* PWR long: just wait for release, no repeat */
             }
-            /* PWR long: just wait for release, no repeat */
             break;
         }
     }

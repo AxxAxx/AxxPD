@@ -893,11 +893,14 @@ int main(void)
           }
       }
 
-      /* Button event processing */
+      /* Button event processing.  Drain ALL queued events each pass —
+       * consuming one per loop iteration delivered queued presses a full
+       * (sometimes slow) iteration late, which felt like missed input and
+       * then like double-presses when the backlog drained. */
       Buttons_Update();
-      {
-          ButtonEvent_t ev = Buttons_GetEvent();
-          if (ev != BTN_NONE && ev != BTN_PWR_LONG
+      for (ButtonEvent_t ev = Buttons_GetEvent(); ev != BTN_NONE;
+           ev = Buttons_GetEvent()) {
+          if (ev != BTN_PWR_LONG
               && ev != BTN_INC_REPEAT && ev != BTN_DEC_REPEAT) {
               Buzzer_Click();
           }
