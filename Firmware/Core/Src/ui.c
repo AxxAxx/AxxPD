@@ -140,6 +140,21 @@ static int fmt_3sig(char *buf, size_t sz, float val, const char *unit, const cha
     return snprintf(buf, sz, "%4.2f%s%s", (double)val, unit, trail);
 }
 
+/* Voltage variant with 4 significant digits: above 10 V the 3-sig format
+ * only resolves 100 mV, hiding regulation and cable-drop effects on what is
+ * a precision readout ("48.04V" instead of "48.0V").  Used where the column
+ * is wide enough (Graph and Energy screens); the dashboard XL row keeps
+ * 3 sig figs because a 7th XL glyph won't fit beside the current column. */
+static int fmt_v4sig(char *buf, size_t sz, float val, const char *unit, const char *trail)
+{
+    if (val < 0.0f) val = 0.0f;
+    if (val >= 99.995f)
+        return snprintf(buf, sz, "%5.1f%s%s", (double)val, unit, trail);
+    if (val >= 9.9995f)
+        return snprintf(buf, sz, "%5.2f%s%s", (double)val, unit, trail);
+    return snprintf(buf, sz, "%5.3f%s%s", (double)val, unit, trail);
+}
+
 /* Scrollbar — shown on right edge of scrollable lists */
 #define SBAR_W       4
 #define SBAR_X       (SCREEN_W - SBAR_W)
@@ -615,7 +630,7 @@ static void UI_DrawGraph(INA228_Reading_t *r, float ntc_temp, uint8_t output_on)
 
     /* Numeric readouts above the plot — update at full 30Hz (cheap text draws).
      * Trailing spaces overwrite residual chars when value string shrinks. */
-    fmt_3sig(buf, sizeof(buf), r->voltage_v, "V", "  ");
+    fmt_v4sig(buf, sizeof(buf), r->voltage_v, "V", "  ");
     LCD_PutStr(DRAW_X, CONTENT_Y, buf, FONT_MD, COL_YELLOW, COL_BG);
 
     fmt_3sig(buf, sizeof(buf), r->current_a, "A", "  ");
@@ -856,7 +871,7 @@ static void UI_DrawEnergy(INA228_Reading_t *r, float ntc_temp, uint8_t output_on
     UI_DrawStatusBar(output_on, ntc_temp);
 
     /* Live readings */
-    fmt_3sig(buf, sizeof(buf), r->voltage_v, "V", " ");
+    fmt_v4sig(buf, sizeof(buf), r->voltage_v, "V", " ");
     LCD_PutStr(DRAW_X, CONTENT_Y, buf, FONT_SM, COL_YELLOW, COL_BG);
     fmt_3sig(buf, sizeof(buf), r->current_a, "A", " ");
     LCD_PutStr(NRG_COL2, CONTENT_Y, buf, FONT_SM, COL_CURRENT, COL_BG);
