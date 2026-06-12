@@ -101,6 +101,13 @@ uint8_t UserTxBufferFS[APP_TX_DATA_SIZE];
 
 /* USER CODE BEGIN PRIVATE_VARIABLES */
 
+/* Host terminal attached (DTR asserted via SET_CONTROL_LINE_STATE).
+ * Gates CDC_Transmit_Blocking: without a host reading the IN endpoint
+ * every transmit spins for its full timeout, which stalls the main loop
+ * (and with it the PD stack) for ~1 s per print — long enough to miss
+ * PD transition deadlines and provoke a Hard Reset mid-selftest. */
+static volatile uint8_t s_cdc_host_dtr = 0;
+
 /* USER CODE END PRIVATE_VARIABLES */
 
 /**
@@ -172,6 +179,7 @@ static int8_t CDC_Init_FS(void)
 static int8_t CDC_DeInit_FS(void)
 {
   /* USER CODE BEGIN 4 */
+  s_cdc_host_dtr = 0;  /* host gone — stop emitting until a port reopens */
   return (USBD_OK);
   /* USER CODE END 4 */
 }
@@ -234,7 +242,10 @@ static int8_t CDC_Control_FS(uint8_t cmd, uint8_t* pbuf, uint16_t length)
     break;
 
     case CDC_SET_CONTROL_LINE_STATE:
-
+      /* Zero-length class request: pbuf is the raw setup packet
+       * (usbd_cdc.c passes (uint8_t*)req), so wValue LSB is pbuf[2].
+       * Bit 0 = DTR — set when a terminal/dashboard opens the port. */
+      s_cdc_host_dtr = (pbuf[2] & 0x01U) ? 1U : 0U;
     break;
 
     case CDC_SEND_BREAK:
@@ -361,6 +372,14 @@ uint8_t CDC_Transmit_Blocking(const uint8_t* Buf, uint16_t Len, uint32_t timeout
   uint8_t result;
   USBD_CDC_HandleTypeDef *hcdc = (USBD_CDC_HandleTypeDef*)hUsbDeviceFS.pClassData;
   if (hcdc == NULL) return USBD_FAIL;
+
+  /* No host reading the port (not configured, or DTR de-asserted) — drop
+   * the output instead of spinning until timeout. The IN endpoint is only
+   * polled while a terminal holds the port open, so blocking here would
+   * stall the main loop (and the PD stack) for timeout_ms per call. */
+  if (hUsbDeviceFS.dev_state != USBD_STATE_CONFIGURED || !s_cdc_host_dtr) {
+    return USBD_FAIL;
+  }
 
   /* Wait for previous TX to complete */
   while (hcdc->TxState != 0) {
