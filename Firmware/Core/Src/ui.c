@@ -23,6 +23,7 @@
  */
 
 #include "ui.h"
+#include "main.h"   /* BLEED_CTRL pin — selftest tracks VBUS down-steps */
 #include "lcd.h"
 #include "graph.h"
 #include "settings.h"
@@ -2275,6 +2276,16 @@ static void UI_SelftestTick(INA228_Reading_t *reading)
         /* Enable output so INA228 can measure actual VBUS */
         Output_Enable();
 
+        /* Keep the bleed resistor (10k, ~40-80mW) on for the whole run.
+         * The INA228 measures the OUTPUT side of the LTC4368, which blocks
+         * reverse current: on a downward step with no load the output caps
+         * stay parked at the old voltage and the measurement reads high
+         * (e.g. 18V for the PPS 3.3V step after the 20V step), failing the
+         * +/-15% check even though the contract negotiated fine.  The bleed
+         * (tau ~0.5s with the 49uF output bulk) lets the caps track VBUS
+         * down well within the 2.5s dwell.  Output_Enable() cleared it. */
+        HAL_GPIO_WritePin(BLEED_CTRL_GPIO_Port, BLEED_CTRL_Pin, GPIO_PIN_SET);
+
         /* Request first voltage */
         axxpd_request_voltage(st_results[0].req_mv, 0);
         st_step_tick = HAL_GetTick();
@@ -2313,7 +2324,9 @@ static void UI_SelftestTick(INA228_Reading_t *reading)
         return;
     }
 
-    /* Request next voltage */
+    /* Request next voltage. Re-assert the bleed in case an OCP retry
+     * cleared it mid-run (the retry path writes BLEED low). */
+    HAL_GPIO_WritePin(BLEED_CTRL_GPIO_Port, BLEED_CTRL_Pin, GPIO_PIN_SET);
     axxpd_request_voltage(st_results[st_step].req_mv, 0);
     st_step_tick = HAL_GetTick();
 }

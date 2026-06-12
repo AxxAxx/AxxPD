@@ -35,6 +35,7 @@ extern "C" {
 
 #include "stm32g4xx_hal.h"
 #include "stm32g4xx_ll_ucpd.h"
+#include "main.h"   /* BLEED_CTRL pin — selftest tracks VBUS down-steps */
 
 #include <cstdio>
 #include <cstring>
@@ -916,6 +917,11 @@ static void selftest_tick() {
         // Enable LTC4368 output so the INA228 can measure actual VBUS.
         // The selftest warning already told the user to disconnect loads.
         Output_Enable();
+        // Bleed on for the whole run: the INA228 is on the OUTPUT side and
+        // the LTC4368 blocks reverse current, so without the bleed the
+        // output caps park at the old voltage on every downward step and
+        // the report shows stale-high readings (10k bleed, tau ~0.5s).
+        HAL_GPIO_WritePin(BLEED_CTRL_GPIO_Port, BLEED_CTRL_Pin, GPIO_PIN_SET);
         char b[64];
         snprintf(b, sizeof(b), "self-test: %u steps queued\r\n",
                  (unsigned)selftest_count);
@@ -946,6 +952,9 @@ static void selftest_tick() {
 
         // Suppress faults during PDO transition (inrush from voltage change)
         g_fault_suppress_until = HAL_GetTick() + 2000U;
+
+        // Re-assert the bleed in case an OCP retry cleared it mid-run
+        HAL_GPIO_WritePin(BLEED_CTRL_GPIO_Port, BLEED_CTRL_Pin, GPIO_PIN_SET);
 
         // Issue the request. trigger_*() calls request_new_power_level()
         // internally so NEW_POWER_LEVEL is set on the next PE tick.
@@ -1006,8 +1015,11 @@ static void selftest_tick() {
     }
 
     case SelftestState::NEXT: {
-        // Wait for VBUS to settle before measuring and advancing.
-        if ((now - selftest_step_t0) < 800) return;
+        // Wait for VBUS to settle before measuring and advancing.  1.5 s
+        // covers the bleed discharge on the worst down-step (28 V -> 3.3 V
+        // is ~1.1 s at tau ~0.5 s); the LTC4368 clamps the output at VBUS
+        // once the caps have bled down to it.
+        if ((now - selftest_step_t0) < 1500) return;
         // Record INA228 measured voltage NOW, after the settle delay.
         {
             SelftestStep& s = selftest_steps[selftest_idx];
