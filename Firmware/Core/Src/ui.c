@@ -214,10 +214,12 @@ uint8_t            settings_adjusting_flag = 0;  /* 1 when adjusting a numeric v
 
 /* Flash message — transient text after an action (e.g. "Defaults loaded").
  * Rendered on every screen (bottom of the content area); flash_msg_life sets
- * the per-message display time (default 2 s). */
+ * the per-message display time (default 2 s), flash_msg_color the text color
+ * (default green). Both reset to defaults when the message expires. */
 static const char *flash_msg = NULL;
 static uint32_t    flash_msg_tick = 0;
 static uint32_t    flash_msg_life = 2000U;
+static uint16_t    flash_msg_color = COL_GREEN;
 
 /* Fault overlay state — fault_acked lets the user dismiss the overlay
  * while g_hw_fault remains set until main.c clears the HW condition. */
@@ -1510,7 +1512,8 @@ void UI_Update(INA228_Reading_t *reading, float ntc_temp, uint8_t output_on)
     /* Flash messages auto-expire after their display time */
     if (flash_msg != NULL && (HAL_GetTick() - flash_msg_tick) >= flash_msg_life) {
         flash_msg = NULL;
-        flash_msg_life = 2000U;  /* restore default for the next message */
+        flash_msg_life = 2000U;       /* restore defaults for the next message */
+        flash_msg_color = COL_GREEN;
         /* wipe the message line and force a repaint of list screens */
         LCD_Fill(0, NAVBAR_Y - 22, SCREEN_W - 1, NAVBAR_Y - 1, COL_BG);
         s_pdo_prev_cursor = 0xFF; s_pdo_prev_scroll = 0xFF; s_pdo_prev_count = 0xFF;
@@ -1652,7 +1655,7 @@ void UI_Update(INA228_Reading_t *reading, float ntc_temp, uint8_t output_on)
          * raised elsewhere, e.g. the corrupt-settings boot warning). */
         if (flash_msg != NULL) {
             LCD_PutStr(DRAW_X, NAVBAR_Y - 22, (char *)flash_msg,
-                       FONT_SM, COL_GREEN, COL_BG);
+                       FONT_SM, flash_msg_color, COL_BG);
         }
         } /* end tool_active else */
 
@@ -2027,13 +2030,14 @@ void UI_HandleButton(ButtonEvent_t event)
                             st_count      = 0;
                             st_pdo_count  = 0;
                         } else if (mi == MI_VERSION) {
-                            /* Read-only — the value column already shows
-                             * FW+HW; SEL just flashes the full string. */
+                            /* Read-only — value column shows FW only; SEL
+                             * flashes the full FW + HW string in yellow. */
                             static char ver_msg[32];
                             snprintf(ver_msg, sizeof(ver_msg), "FW %s  HW rev %u",
                                      FW_Version(), (unsigned)get_hw_version());
                             flash_msg = ver_msg;
                             flash_msg_tick = HAL_GetTick();
+                            flash_msg_color = COL_YELLOW;
                         } else if (Menu_IsNumeric(mi)) {
                             /* Numeric items: SEL cycles forward (same as INC) */
                             Menu_AdjustNumeric(mi, +1);

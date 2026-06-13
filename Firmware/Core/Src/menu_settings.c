@@ -207,10 +207,10 @@ const char* Menu_GetValueStr(uint16_t mi)
         return Settings_GetTempFahrenheit() ? "F" : "C";
     }
 
-    /* Version — read-only: firmware version + hardware revision straps */
+    /* Version — read-only: firmware version (SELECT shows FW + HW) */
     if (mi == MI_VERSION) {
-        static char vbuf[12];
-        snprintf(vbuf, sizeof(vbuf), "%s HW%u", FW_Version(), (unsigned)get_hw_version());
+        static char vbuf[16];
+        snprintf(vbuf, sizeof(vbuf), "fw:%s", FW_Version());
         return vbuf;
     }
 
