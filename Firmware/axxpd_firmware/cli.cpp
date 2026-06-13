@@ -66,27 +66,39 @@ static inline float temp_display(float celsius) {
 // -----------------------------------------------------------------------------
 // Identification / version
 // -----------------------------------------------------------------------------
-// Bump FW_VERSION when you cut a new build. It appears in:
+// Single source of truth: bump these three numbers when cutting a build.
+// The "major.minor.patch" string is derived from them at runtime and appears in:
 //   - the boot banner next to "AxxPD"
 //   - the help header
 //   - the *IDN? 4th field (per SCPI: Manufacturer,Model,Serial,FirmwareVersion)
+//   - Settings > System > Version on the device
+uint8_t fw_version_major = 1;
+uint8_t fw_version_minor = 0;
+uint8_t fw_version_patch = 0;
 
-#define FW_VERSION "0.2.0"
+/* "M.m.p" rendered once from the numbers above (built lazily on first use). */
+static char fw_version_str[16];
 
 /* C-linkage accessor for the UI (Settings > System > Version) */
-extern "C" const char* FW_Version(void) { return FW_VERSION; }
+extern "C" const char* FW_Version(void) {
+    if (fw_version_str[0] == '\0') {
+        snprintf(fw_version_str, sizeof(fw_version_str), "%u.%u.%u",
+                 (unsigned)fw_version_major, (unsigned)fw_version_minor,
+                 (unsigned)fw_version_patch);
+    }
+    return fw_version_str;
+}
 
 /* SCPI: Manufacturer,Model,Serial,FirmwareVersion. The serial field is the
  * MCU's 96-bit unique device ID (UID base 0x1FFF7590 on STM32G4) so every
  * unit identifies uniquely in multi-device test rigs. Built in cli_init(). */
-static char IDN_STRING[64] =
-    "AxxPD,USBPD-Sink,0," FW_VERSION;
+static char IDN_STRING[64];
 
 static void idn_build(void) {
     const volatile uint32_t* uid = reinterpret_cast<const volatile uint32_t*>(0x1FFF7590UL);
     snprintf(IDN_STRING, sizeof(IDN_STRING), "AxxPD,USBPD-Sink,%08lX%08lX%08lX,%s",
              (unsigned long)uid[2], (unsigned long)uid[1], (unsigned long)uid[0],
-             FW_VERSION);
+             FW_Version());
 }
 
 // -----------------------------------------------------------------------------
@@ -495,9 +507,9 @@ static void apply_source_target() {
 // Help text (returned by :SYST:HELP?)
 // -----------------------------------------------------------------------------
 
+/* Header is emitted separately in do_syst_help() so the version (now a
+ * runtime string, not a compile-time literal) can be interpolated. */
 static const char* HELP_TEXT =
-    "\r\n"
-    "== AxxPD v" FW_VERSION "  interactive command reference =========================\r\n"
     "SPR = Standard Power Range (USB-PD 3.0+ baseline, up to 20 V / 100 W, PDO 1-7).\r\n"
     "EPR = Extended Power Range (PD 3.1+ addition, up to 48 V / 240 W, PDO 8-11).\r\n"
     "EPR slots (28-48 V) hidden until 'list all' or 'epr'. Chain commands with ';'.\r\n"
@@ -1548,7 +1560,14 @@ static void do_pd_contract() {
 }
 
 // :SYST:HELP?
-static void do_syst_help() { out(HELP_TEXT); }
+static void do_syst_help() {
+    char hdr[80];
+    snprintf(hdr, sizeof(hdr),
+             "\r\n== AxxPD v%s  interactive command reference "
+             "=========================\r\n", FW_Version());
+    out(hdr);
+    out(HELP_TEXT);
+}
 
 // :SYST:ERR?
 static void do_syst_err() {
@@ -3001,7 +3020,12 @@ void cli_init(pd::Port* port, pd::PE* pe, AppDPM* dpm, UcpdDriver* driver) {
     // Initial trigger so boot lands at 5 V once attached.
     if (s_dpm) s_dpm->trigger_any(target_mv, target_ma);
 
-    out("\r\nAxxPD v" FW_VERSION " ready. Type 'help' for commands.\r\n");
+    {
+        char banner[56];
+        snprintf(banner, sizeof(banner),
+                 "\r\nAxxPD v%s ready. Type 'help' for commands.\r\n", FW_Version());
+        out(banner);
+    }
 }
 
 void cli_poll() {
