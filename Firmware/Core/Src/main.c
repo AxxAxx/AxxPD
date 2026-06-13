@@ -1973,11 +1973,14 @@ uint16_t Timer_GetRemaining(void) {
  * Hardware version detection — reads PC13/PC14/PC15 straps
  * ---------------------------------------------------------------------------*/
 uint8_t get_hw_version(void) {
+    /* The 3 strap pins encode the board revision starting from 0, so the
+     * first production board reads as straps=0. Offset by +1 so it reports
+     * as HW revision 1 (whole numbers, no decimals). */
     uint8_t v = 0;
     if (HAL_GPIO_ReadPin(VERSION_BIT_1_GPIO_Port, VERSION_BIT_1_Pin) == GPIO_PIN_SET) v |= 1;
     if (HAL_GPIO_ReadPin(VERSION_BIT_2_GPIO_Port, VERSION_BIT_2_Pin) == GPIO_PIN_SET) v |= 2;
     if (HAL_GPIO_ReadPin(VERSION_BIT_3_GPIO_Port, VERSION_BIT_3_Pin) == GPIO_PIN_SET) v |= 4;
-    return v;
+    return (uint8_t)(v + 1U);
 }
 
 void App_SetTargetVoltage(uint32_t mv, uint32_t ma)
