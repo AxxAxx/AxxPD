@@ -106,8 +106,6 @@ static uint8_t    g_boot_restore_vi = 0;
  * Phase 1: EPR requested, waiting for completion (up to 2 s).
  * Phase 2: done (success or gave up). */
 static uint8_t    g_epr_boot_phase   = 0;
-static uint8_t    g_epr_boot_attempt = 0;
-static uint32_t   g_epr_boot_t0      = 0;
 
 /* Autostart (power_on_boot) abort countdown */
 static volatile uint8_t g_boot_autostart_aborted = 0;  /* SELECT pressed during the window */
@@ -552,7 +550,7 @@ int main(void)
           g_output_enabled = 0;
       }
 
-      /* Tool state machines (selftest, voltage sweep) — need fast ticking */
+      /* Tool state machine (selftest) — needs fast ticking */
       UI_ToolTick(&g_ina_reading);
 
       /* --- Deferred EPR entry (non-blocking) ---
@@ -871,7 +869,7 @@ int main(void)
           if ((int32_t)(g_fault_suppress_until - now) > 0) {
               post_suppress_rechecked = 0;  /* new suppression window opened */
           } else if (g_output_enabled && !g_hw_fault &&
-                     (int32_t)(now - g_fault_suppress_until) < 200U) {
+                     (int32_t)(now - g_fault_suppress_until) < 200) {
               if (!post_suppress_rechecked) {
                   post_suppress_rechecked = 1;
                   INA228_ClearAlertLatch(&g_ina);  /* drop stale latched ALERT */
@@ -884,7 +882,7 @@ int main(void)
       }
       if (g_output_enabled && !g_hw_fault &&
           (int32_t)(g_fault_suppress_until - now) <= 0 &&
-          (int32_t)(now - g_fault_suppress_until) < 200U) {
+          (int32_t)(now - g_fault_suppress_until) < 200) {
           if (HAL_COMP_GetOutputLevel(&hcomp1) == COMP_OUTPUT_LEVEL_HIGH) {
               g_hw_fault = 1;
               g_fault_source = FAULT_COMP_OVP;
@@ -1833,6 +1831,42 @@ void HAL_COMP_TriggerCallback(COMP_HandleTypeDef *hcomp) {
     }
 }
 
+/* Common OCP-trip handling for the LTC4368 and INA228 alert paths: soft-start
+ * retry up to the configured limit, otherwise latch a fault. Caller must have
+ * already confirmed g_output_enabled && !g_hw_fault. */
+static void ocp_handle_trip(uint8_t fault_source) {
+    uint8_t max_retries = Settings_GetOcpRetry();  /* 0=latch, 1=1x, 2=3x */
+    uint8_t allowed = (max_retries == 0) ? 0
+                    : (max_retries == 1) ? 1 : 3;
+    uint32_t now = HAL_GetTick();
+
+    /* If a recent OCP retry succeeded (>500ms since last trip), reset the
+     * counter — the previous trip was just inrush. */
+    if (ocp_retry_count > 0 && (now - ocp_retry_tick) > 500U) {
+        ocp_retry_count = 0;
+    }
+
+    if (ocp_retry_count < allowed) {
+        /* Inrush likely — cut SHDN but keep bleed OFF so output caps stay
+         * charged.  This way the retry re-enable sees a smaller voltage delta
+         * to the load, reducing inrush on the next try. */
+        HAL_GPIO_WritePin(LTC4368_SHDN_GPIO_Port, LTC4368_SHDN_Pin, GPIO_PIN_RESET);
+        g_output_enabled = 0;
+        ocp_retry_tick = now;
+        ocp_retry_pending = 1;
+        /* Don't set g_hw_fault — no error screen yet */
+    } else {
+        /* Real fault or retries exhausted — latch off permanently */
+        g_hw_fault = 1;
+        g_fault_source = fault_source;
+        Output_Disable_ISR();
+        g_fault_pending_beep = 1;
+        ocp_retry_count = 0;
+        ocp_retry_pending = 0;
+        FaultLog_Push(fault_source, 0, 0);
+    }
+}
+
 /* EXTI callback — LTC4368 fault, INA228 alert, LM5166 power-good, TPD4S480 */
 void HAL_GPIO_EXTI_Callback(uint16_t GPIO_Pin) {
     /* Suppress ALL faults during inrush/PDO transition window */
@@ -1843,65 +1877,14 @@ void HAL_GPIO_EXTI_Callback(uint16_t GPIO_Pin) {
         if (HAL_GPIO_ReadPin(LTC4368_FLT_GPIO_Port, LTC4368_FLT_Pin) != GPIO_PIN_RESET)
             return;
         if (g_output_enabled && !g_hw_fault) {
-            uint8_t max_retries = Settings_GetOcpRetry();  /* 0=latch, 1=1x, 2=3x */
-            uint8_t allowed = (max_retries == 0) ? 0
-                            : (max_retries == 1) ? 1 : 3;
-            uint32_t now = HAL_GetTick();
-
-            /* If a recent OCP retry succeeded (>500ms since last trip),
-             * reset the counter — the previous trip was just inrush. */
-            if (ocp_retry_count > 0 && (now - ocp_retry_tick) > 500U) {
-                ocp_retry_count = 0;
-            }
-
-            if (ocp_retry_count < allowed) {
-                /* Inrush likely — cut SHDN but keep bleed OFF so output caps
-                 * stay charged.  This way the retry re-enable sees a smaller
-                 * voltage delta to the load, reducing inrush on the next try. */
-                HAL_GPIO_WritePin(LTC4368_SHDN_GPIO_Port, LTC4368_SHDN_Pin, GPIO_PIN_RESET);
-                g_output_enabled = 0;
-                ocp_retry_tick = now;
-                ocp_retry_pending = 1;
-                /* Don't set g_hw_fault — no error screen yet */
-            } else {
-                /* Real fault or retries exhausted — latch off permanently */
-                g_hw_fault = 1;
-                g_fault_source = FAULT_LTC4368;
-                Output_Disable_ISR();
-                g_fault_pending_beep = 1;
-                ocp_retry_count = 0;
-                ocp_retry_pending = 0;
-                FaultLog_Push(FAULT_LTC4368, 0, 0);
-            }
+            ocp_handle_trip(FAULT_LTC4368);
         }
         return;
     }
 
     if (GPIO_Pin == INA228_ALERT_Pin) {
         if (g_output_enabled && !g_hw_fault) {
-            uint8_t max_retries = Settings_GetOcpRetry();
-            uint8_t allowed = (max_retries == 0) ? 0
-                            : (max_retries == 1) ? 1 : 3;
-            uint32_t now = HAL_GetTick();
-
-            if (ocp_retry_count > 0 && (now - ocp_retry_tick) > 500U) {
-                ocp_retry_count = 0;
-            }
-
-            if (ocp_retry_count < allowed) {
-                HAL_GPIO_WritePin(LTC4368_SHDN_GPIO_Port, LTC4368_SHDN_Pin, GPIO_PIN_RESET);
-                g_output_enabled = 0;
-                ocp_retry_tick = now;
-                ocp_retry_pending = 1;
-            } else {
-                g_hw_fault = 1;
-                g_fault_source = FAULT_INA228_OCP;
-                Output_Disable_ISR();
-                g_fault_pending_beep = 1;
-                ocp_retry_count = 0;
-                ocp_retry_pending = 0;
-                FaultLog_Push(FAULT_INA228_OCP, 0, 0);
-            }
+            ocp_handle_trip(FAULT_INA228_OCP);
         }
     }
     else if (GPIO_Pin == LM5166_FGOOD_Pin) {

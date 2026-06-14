@@ -384,11 +384,6 @@ void Settings_ProcessDeferred(void)
     }
 }
 
-uint8_t Settings_IsSavePending(void)
-{
-    return settings_save_pending;
-}
-
 /* ------------------------------------------------------------------ */
 /*  Bool settings accessors                                           */
 /* ------------------------------------------------------------------ */
@@ -401,9 +396,7 @@ uint8_t Settings_GetSplashScreen(void)    { return settings.splash_screen;   }
 uint8_t Settings_GetBuzzerEnabled(void)   { return settings.buzzer_enabled;  }
 uint8_t Settings_GetStartupBeep(void)     { return settings.startup_beep;    }
 uint8_t Settings_GetTempFahrenheit(void)  { return settings.temp_fahrenheit; }
-void    Settings_SetTempFahrenheit(uint8_t val) { settings.temp_fahrenheit = val ? 1U : 0U; }
 uint8_t Settings_GetGraphWindow(void)    { return settings.graph_window; }
-void    Settings_SetGraphWindow(uint8_t val) { if (val > 3U) val = 3U; settings.graph_window = val; }
 
 /** Set a boolean field by its byte offset (fi) within Settings_t.
  *  Used by the menu system to toggle settings generically without
@@ -441,12 +434,6 @@ void Settings_SaveLastSettings(uint32_t mv, uint32_t ma)
 
 uint8_t Settings_GetLastUsedPdo(void)     { return settings.last_used_pdo; }
 
-void Settings_SetLastUsedPdo(uint8_t pdo)
-{
-    settings.last_used_pdo = pdo;
-    Settings_Save();
-}
-
 /* ------------------------------------------------------------------ */
 /*  Preset accessors                                                  */
 /* ------------------------------------------------------------------ */
@@ -454,11 +441,6 @@ Preset_t* Settings_GetPreset(uint8_t index)
 {
     if (index >= settings.preset_count) return &settings.presets[0];
     return &settings.presets[index];
-}
-
-uint8_t Settings_PresetCount(void)
-{
-    return settings.preset_count;
 }
 
 uint8_t Settings_PresetIsEmpty(uint8_t index)
@@ -507,13 +489,6 @@ uint16_t Settings_GetChargeCompleteSec(void) { return settings.charge_complete_s
 uint8_t  Settings_GetOcpRetry(void)    { return settings.ocp_retry;     }
 int16_t  Settings_GetCalVOffsetUv(void){ return settings.cal_v_offset_uv; }
 int16_t  Settings_GetCalIOffsetUa(void){ return settings.cal_i_offset_ua; }
-
-void Settings_SetOcpRetry(uint8_t val)
-{
-    if (val > 2U) val = 2U;
-    settings.ocp_retry = val;
-    Settings_Save();
-}
 
 /**
  * Get the current value of a numeric menu item as a uint32.

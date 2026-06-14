@@ -85,7 +85,7 @@ Alternatively, use any serial terminal at 115200 baud. Type `help` for a command
 - USB CDC serial interface for SCPI commands and data logging at 20 Hz.
 - Browser-based WebSerial dashboard with live readout, chart, and CSV recording (zero install).
 - Python scripting library (`pip install axxpd`) for automated test rigs and CI integration.
-- USB DFU firmware updates via `dfu` CLI command or Settings menu.
+- USB DFU firmware updates via the `dfu` CLI command.
 - Programmable voltage presets stored in flash (up to 5 slots).
 - Programmable voltage sequencing with configurable step times.
 - Energy tracking with INA228 hardware Wh/Ah accumulators.
@@ -272,7 +272,7 @@ STM32_Programmer_CLI -c port=SWD freq=4000 -w AxxPD.bin 0x08000000 -v -rst
 ```
 
 ## USB DFU
-1. Enter DFU mode by sending the `dfu` command over USB serial, or via Settings > System > DFU
+1. Enter DFU mode by sending the `dfu` command over USB serial
 2. Use STM32CubeProgrammer, select USB connection, and flash the `.bin` file
 3. Power cycle after flashing
 
@@ -319,9 +319,10 @@ Settings are accessed via the Settings screen (Screen 6) using the 4-button navi
 | Tools | Self-test | Walk all source PDOs, report pass/fail | -- |
 | Calibration | V offset | Voltage measurement offset | 0 |
 | Calibration | I offset | Current measurement offset | 0 |
+| System | Version | Show firmware and hardware version (SELECT shows FW + HW) | -- |
 | System | Load defaults | Restore factory settings | -- |
 | System | Save & Reboot | Save settings to flash and reboot | -- |
-| System | Exit no save | Leave the settings menu | -- |
+| (list) | Back | Exit the settings menu to the normal screens (listed below System in the group list; settings auto-save on change) | -- |
 
 # Repository Structure
 ```

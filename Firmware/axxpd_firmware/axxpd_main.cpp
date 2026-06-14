@@ -325,26 +325,6 @@ extern "C" uint8_t axxpd_is_pps_active(void) {
     return s_pe->is_in_pps_contract() ? 1u : 0u;
 }
 
-extern "C" uint32_t axxpd_get_pps_mv(void) {
-    if (!s_port_ptr || !s_pe) return 0;
-    if (!s_pe->is_in_pps_contract()) return 0;
-    uint32_t rdo = s_port_ptr->rdo_contracted;
-    if (rdo == 0) return 0;
-    // PPS RDO: output_voltage bits[20:9], 20 mV step
-    pd::RDO_PPS rdo_pps{rdo};
-    return rdo_pps.output_voltage * 20u;
-}
-
-extern "C" uint32_t axxpd_get_pps_ma(void) {
-    if (!s_port_ptr || !s_pe) return 0;
-    if (!s_pe->is_in_pps_contract()) return 0;
-    uint32_t rdo = s_port_ptr->rdo_contracted;
-    if (rdo == 0) return 0;
-    // PPS RDO: operating_current bits[6:0], 50 mA step
-    pd::RDO_PPS rdo_pps{rdo};
-    return rdo_pps.operating_current * 50u;
-}
-
 extern "C" uint8_t axxpd_is_epr_active(void) {
     if (!s_pe) return 0;
     return s_pe->is_in_epr_mode() ? 1u : 0u;
@@ -519,11 +499,3 @@ extern "C" void axxpd_enable_cable_emu(void) {
     s_driver->enable_cable_emu();
 }
 
-extern "C" void axxpd_hard_reset(void) {
-    // Trigger a PD hard reset by setting the PE flag that PE's state machine
-    // checks. This mirrors the mechanism pdsink uses internally (pe.cpp:830).
-    // Safe to call from main-loop context; the flag is atomic.
-    if (!s_port_ptr) return;
-    s_port_ptr->pe_flags.set(pd::PE_FLAG::PRL_HARD_RESET_PENDING);
-    s_port_ptr->wakeup();
-}

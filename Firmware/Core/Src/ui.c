@@ -181,10 +181,6 @@ static void ui_draw_scrollbar(uint8_t total, uint8_t visible,
     LCD_Fill(SBAR_X, thumb_y, SCREEN_W - 1, thumb_y + thumb_h - 1, SBAR_THUMB);
 }
 
-/* Protection thresholds (match values set in main.c) */
-#define OVP_THRESHOLD_MV  52000U
-#define OCP_THRESHOLD_A   5.5f
-
 /* Defined in main.c */
 extern void App_SetTargetVoltage(uint32_t mv, uint32_t ma);
 extern void OVP_SetThreshold(uint32_t vbus_max_mv);
@@ -210,7 +206,7 @@ static uint8_t     preset_cursor = 0;
 static uint8_t     settings_group = 0;   /* cursor in group list (level 0) */
 static uint8_t     settings_item  = 0;   /* cursor within a group (level 1) */
 static uint8_t     settings_level = 0;   /* 0=browsing groups, 1=inside a group */
-uint8_t            settings_adjusting_flag = 0;  /* 1 when adjusting a numeric value */
+static uint8_t     settings_adjusting_flag = 0;  /* 1 when adjusting a numeric value */
 
 /* Flash message — transient text after an action (e.g. "Defaults loaded").
  * Rendered on every screen (bottom of the content area); flash_msg_life sets
@@ -267,9 +263,9 @@ static uint8_t UI_GetFixedVoltages(uint32_t *out, uint8_t max_out)
     return n;
 }
 
-/** Check if any PPS APDO is available — determines whether fine V adjust
- *  and continuous voltage range are available (vs fixed-PDO stepping) */
-/** Check if any programmable voltage APDO is available (PPS or AVS). */
+/** Check if any programmable voltage APDO is available (PPS or AVS) —
+ *  determines whether fine V adjust and continuous voltage range are
+ *  available (vs fixed-PDO stepping). */
 static uint8_t UI_HasPPS(void)
 {
     uint32_t pdos[14];
@@ -950,28 +946,12 @@ static uint8_t s_set_prev_adj = 0;              /* previous adjusting_flag state
 /* ------------------------------------------------------------------ */
 #define TOOL_NONE           0
 #define TOOL_CHARGER_INFO   1
-#define TOOL_VOLTAGE_SWEEP  2
 #define TOOL_CABLE_INFO     3
 #define TOOL_SELFTEST       4
 
 static uint8_t tool_active = TOOL_NONE;  /* currently active tool (TOOL_*) */
 static int8_t  tool_scroll = 0;           /* scroll offset within tool display */
 static uint8_t tool_drawn  = 0;           /* 0 = needs redraw */
-
-/* Voltage sweep results */
-typedef struct {
-    uint16_t req_mv;
-    uint16_t meas_mv;
-    uint16_t meas_ma;
-    uint8_t  pass;
-} SweepResult_t;
-
-static SweepResult_t sweep_results[14];
-static uint8_t sweep_count   = 0;
-static uint8_t sweep_done    = 0;  /* 1 = sweep complete, showing results */
-static uint8_t sweep_running = 0;  /* 1 = sweep in progress (main loop) */
-static uint8_t sweep_step    = 0;  /* current PDO index being tested */
-static uint32_t sweep_step_tick = 0;  /* tick when current step started */
 
 /* Selftest — walks all PDOs (Fixed + PPS mid + AVS mid) + random, measures, pass/fail */
 #define ST_MAX_STEPS 40
@@ -990,14 +970,8 @@ static uint8_t  st_done      = 0;
 static uint8_t  st_running   = 0;
 static uint32_t st_step_tick = 0;
 
-/* PDO list for selftest — stores raw PDOs + their 1-based position in source_caps */
-static uint32_t st_pdos[14];
-static uint8_t  st_pdo_pos[14];  /* 1-based position for trigger_by_position */
-static uint8_t  st_pdo_count = 0;
-
 /* Forward declaration for tool draw functions */
 static void Tool_DrawChargerInfo(void);
-static void Tool_DrawVoltageSweep(void);
 static void Tool_DrawCableInfo(void);
 static void Tool_DrawSelftest(void);
 
@@ -1135,67 +1109,6 @@ static void Tool_DrawCableInfo(void)
     LCD_PutStr(4, STATUSBAR_H + 96, "--- SEL_LONG to exit ---", FONT_SM, COL_WHITE, tool_bg);
 }
 
-/* ------------------------------------------------------------------ */
-/*  Tool: Voltage Sweep                                                */
-/* ------------------------------------------------------------------ */
-static void Tool_DrawVoltageSweep(void)
-{
-    uint16_t tool_bg = RGB(40, 20, 20);
-    LCD_Fill(0, STATUSBAR_H, SCREEN_W - 1, NAVBAR_Y - 1, tool_bg);
-
-    if (!sweep_done) {
-        LCD_PutStr(4, STATUSBAR_H + 2, "=== Voltage Sweep ===", FONT_SM, COL_YELLOW, tool_bg);
-        char buf[40];
-        snprintf(buf, sizeof(buf), "Sweeping PDO %u...", (unsigned)(sweep_step + 1U));
-        LCD_PutStr(4, STATUSBAR_H + 22, buf, FONT_SM, COL_WHITE, tool_bg);
-        LCD_PutStr(4, STATUSBAR_H + 42, "Please wait...", FONT_SM, COL_GREY, tool_bg);
-        return;
-    }
-
-    /* Show results */
-    LCD_PutStr(4, STATUSBAR_H + 2, "=== Sweep Results ===", FONT_SM, COL_YELLOW, tool_bg);
-
-    char lines[14][40];
-    uint8_t nlines = 0;
-    for (uint8_t i = 0; i < sweep_count && nlines < 14U; i++) {
-        char buf[40];
-        uint16_t req_v = sweep_results[i].req_mv / 1000U;
-        uint16_t req_d = (sweep_results[i].req_mv % 1000U) / 10U;
-        uint16_t meas_v = sweep_results[i].meas_mv / 1000U;
-        uint16_t meas_d = (sweep_results[i].meas_mv % 1000U) / 10U;
-        uint16_t meas_a = sweep_results[i].meas_ma / 1000U;
-        uint16_t meas_ad = (sweep_results[i].meas_ma % 1000U) / 10U;
-        snprintf(buf, sizeof(buf), "%u.%02uV:%u.%02uV %u.%02uA %s",
-                 (unsigned)req_v, (unsigned)req_d,
-                 (unsigned)meas_v, (unsigned)meas_d,
-                 (unsigned)meas_a, (unsigned)meas_ad,
-                 sweep_results[i].pass ? "OK" : "FAIL");
-        memcpy(lines[nlines++], buf, 40);
-    }
-    if (nlines < 13U) {
-        memcpy(lines[nlines++], "--- SEL_LONG to exit ---", 25);
-    }
-
-    uint8_t row_h = 18U;
-    uint8_t visible = (uint8_t)((NAVBAR_Y - STATUSBAR_H - 20U) / row_h);
-    if (tool_scroll < 0) tool_scroll = 0;
-    if (nlines > visible && tool_scroll > (int8_t)(nlines - visible))
-        tool_scroll = (int8_t)(nlines - visible);
-
-    for (uint8_t r = 0; r < visible; r++) {
-        int8_t li = (int8_t)(tool_scroll + (int8_t)r);
-        uint16_t col = (li >= 0 && li < (int8_t)nlines && sweep_results[li].pass) ?
-                       COL_GREEN : RGB(255, 100, 100);
-        if (li >= 0 && li < (int8_t)nlines) {
-            uint16_t y = STATUSBAR_H + 20U + (uint16_t)r * row_h;
-            LCD_PutStr(4, y, lines[li], FONT_SM,
-                       (li < (int8_t)sweep_count) ? col : COL_GREY, tool_bg);
-        }
-    }
-    ui_draw_scrollbar(nlines, visible, (uint8_t)tool_scroll,
-                      STATUSBAR_H + 20U, visible * row_h);
-}
-
 static void Tool_DrawSelftest(void)
 {
     #define ST_BG       RGB(20, 20, 40)
@@ -1300,8 +1213,9 @@ static void UI_DrawSettings(float ntc_temp, uint8_t output_on)
     /* Pre-compute scroll positions BEFORE the full-redraw check so that
      * scroll changes are detected on the same frame they happen. */
     static uint8_t grp_scroll = 0;
+    uint8_t grp_total = (uint8_t)(g_menu_group_count + 1U);  /* +1 for "Back" */
     uint8_t grp_visible = 5U;
-    if (grp_visible > g_menu_group_count) grp_visible = g_menu_group_count;
+    if (grp_visible > grp_total) grp_visible = grp_total;
 
     if (settings_level == 0) {
         if (settings_group < grp_scroll) grp_scroll = settings_group;
@@ -1346,11 +1260,12 @@ static void UI_DrawSettings(float ntc_temp, uint8_t output_on)
              * cursor and the red row appears only after SELECT. */
             uint16_t bg = (sel && edit_mode) ? COL_SEL_BG : COL_BG;
             uint16_t fg = COL_WHITE;
-            snprintf(buf, sizeof(buf), "%c %-20s", sel ? '>' : ' ', g_menu_groups[i].title);
+            const char *label = (i < g_menu_group_count) ? g_menu_groups[i].title : "Back";
+            snprintf(buf, sizeof(buf), "%c %-20s", sel ? '>' : ' ', label);
             LCD_Fill(0, y, SCREEN_W - 1, y + row_h - 1, bg);
             LCD_PutStr(DRAW_X, y + TEXT_VPAD, buf, FONT_SM, fg, bg);
         }
-        ui_draw_scrollbar(g_menu_group_count, grp_visible, grp_scroll,
+        ui_draw_scrollbar(grp_total, grp_visible, grp_scroll,
                           CONTENT_Y, grp_visible * row_h);
     } else {
         /* Level 1: items within the selected group, plus a "Back" entry.
@@ -1616,14 +1531,10 @@ void UI_Update(INA228_Reading_t *reading, float ntc_temp, uint8_t output_on)
                 switch (tool_active) {
                 case TOOL_CHARGER_INFO:  Tool_DrawChargerInfo();  break;
                 case TOOL_CABLE_INFO:    Tool_DrawCableInfo();    break;
-                case TOOL_VOLTAGE_SWEEP: Tool_DrawVoltageSweep(); break;
                 case TOOL_SELFTEST:      Tool_DrawSelftest();     break;
                 default: break;
                 }
                 tool_drawn = 1;
-            } else if (tool_active == TOOL_VOLTAGE_SWEEP && !sweep_done) {
-                /* Sweep in progress: redraw at 30Hz to show progress */
-                Tool_DrawVoltageSweep();
             }
         } else {
         /* Normal screen dispatch */
@@ -1717,7 +1628,6 @@ void UI_HandleButton(ButtonEvent_t event)
             tool_active = TOOL_NONE;
             tool_scroll = 0;
             tool_drawn  = 0;
-            sweep_running = 0;
             st_running    = 0;
             /* Force full settings redraw */
             s_set_prev_group = 0xFF;
@@ -1885,7 +1795,7 @@ void UI_HandleButton(ButtonEvent_t event)
                         Buzzer_Fault();
                         return;
                     }
-                    char name[8];
+                    char name[20];
                     snprintf(name, sizeof(name), "%luV/%luA",
                              (unsigned long)(mv / 1000U),
                              (unsigned long)(ma / 1000U));
@@ -1900,35 +1810,38 @@ void UI_HandleButton(ButtonEvent_t event)
             }
         }
 
-        /* --- Energy screen: no INC/DEC editing, fall through to navigation.
-         * SEL_LONG resets accumulators without needing edit mode. */
-        if (current_screen == UI_SCREEN_ENERGY) {
-            if (event == BTN_SEL_LONG) {
-                if (g_ina.hi2c != NULL) {
-                    INA228_ResetEnergy(&g_ina);
-                    Energy_SessionReset();
-                    Buzzer_Confirm();
-                }
-            }
-            edit_mode = 0;  /* exit edit mode, let INC/DEC navigate */
-        }
+        /* (Energy screen never enters edit mode — its SEL_LONG accumulator
+         * reset is handled in the navigation section below.) */
 
         /* --- Settings screen: 2-level group/item navigation ---
-         * Level 0: SEL enters the highlighted group
+         * Level 0: SEL enters the highlighted group, or exits to the normal
+         *          screens when the trailing "Back" entry is selected
          * Level 1: SEL toggles bools or triggers actions, SEL_LONG backs out */
         if (current_screen == UI_SCREEN_SETTINGS) {
             if (settings_level == 0) {
+                /* Navigable entries = groups + a trailing "Back" item that
+                 * exits Settings to the normal screens. */
+                uint8_t back_idx = g_menu_group_count;  /* index just past last group */
                 switch (event) {
                 case BTN_DEC_PRESS: case BTN_DEC_REPEAT:
                     if (settings_group > 0) settings_group--;
                     return;
                 case BTN_INC_PRESS: case BTN_INC_REPEAT:
-                    if (settings_group < g_menu_group_count - 1U) settings_group++;
+                    if (settings_group < back_idx) settings_group++;
                     return;
                 case BTN_SEL_PRESS:
-                    settings_level = 1;
-                    settings_item = 0;
-                    s_set_scroll = 0;
+                    if (settings_group >= back_idx) {
+                        /* "Back" — exit to the normal screens. Settings
+                         * auto-save on change, so nothing to discard. */
+                        edit_mode = 0;
+                        settings_level = 0;
+                        settings_group = 0;
+                        current_screen = UI_SCREEN_DASHBOARD;
+                    } else {
+                        settings_level = 1;
+                        settings_item = 0;
+                        s_set_scroll = 0;
+                    }
                     return;
                 case BTN_SEL_LONG:
                     edit_mode = 0; return;
@@ -1994,28 +1907,10 @@ void UI_HandleButton(ButtonEvent_t event)
                         } else if (mi == MI_SAVE_REBOOT) {
                             Settings_SaveImmediate();  /* blocking — deferred save would be lost on reset */
                             NVIC_SystemReset();
-                        } else if (mi == MI_EXIT_NO_SAVE) {
-                            /* Just exit. Settings already auto-save on change, so
-                             * there is nothing to discard — and reloading flash
-                             * here (old Settings_Init) reverted any change still
-                             * deferred under EPR (e.g. the graph window), making
-                             * it look like the setting "didn't work". */
-                            edit_mode = 0;
-                            settings_level = 0;
-                            current_screen = UI_SCREEN_DASHBOARD;
                         } else if (mi == MI_TOOL_CHARGER_INFO) {
                             tool_active = TOOL_CHARGER_INFO;
                             tool_scroll = 0;
                             tool_drawn  = 0;
-                        } else if (mi == MI_TOOL_VOLTAGE_SWEEP) {
-                            tool_active   = TOOL_VOLTAGE_SWEEP;
-                            tool_scroll   = 0;
-                            tool_drawn    = 0;
-                            sweep_done    = 0;
-                            sweep_running = 1;
-                            sweep_step    = 0;
-                            sweep_count   = 0;
-                            sweep_step_tick = HAL_GetTick();
                         } else if (mi == MI_TOOL_CABLE_INFO) {
                             tool_active = TOOL_CABLE_INFO;
                             tool_scroll = 0;
@@ -2028,7 +1923,6 @@ void UI_HandleButton(ButtonEvent_t event)
                             st_running    = 1;
                             st_step       = 0;
                             st_count      = 0;
-                            st_pdo_count  = 0;
                         } else if (mi == MI_VERSION) {
                             /* Read-only — value column shows FW only; SEL
                              * flashes the full FW + HW string in yellow. */
@@ -2038,9 +1932,6 @@ void UI_HandleButton(ButtonEvent_t event)
                             flash_msg = ver_msg;
                             flash_msg_tick = HAL_GetTick();
                             flash_msg_color = COL_YELLOW;
-                        } else if (Menu_IsNumeric(mi)) {
-                            /* Numeric items: SEL cycles forward (same as INC) */
-                            Menu_AdjustNumeric(mi, +1);
                         } else {
                             /* Bool toggle — force a settings redraw so the new
                              * YES/NO (or C/F) value shows immediately. Selection
@@ -2115,8 +2006,18 @@ void UI_HandleButton(ButtonEvent_t event)
 
     case BTN_SEL_LONG:
         if (!edit_mode) {
-            ui_locked = 1;
-            Buzzer_Confirm();
+            if (current_screen == UI_SCREEN_ENERGY) {
+                /* Energy screen: SEL_LONG resets the charge/energy
+                 * accumulators and session stats instead of locking. */
+                if (g_ina.hi2c != NULL) {
+                    INA228_ResetEnergy(&g_ina);
+                    Energy_SessionReset();
+                }
+                Buzzer_Confirm();
+            } else {
+                ui_locked = 1;
+                Buzzer_Confirm();
+            }
         }
         break;
 
@@ -2136,101 +2037,16 @@ uint8_t UI_WantsPwrShort(void)
     return 0;
 }
 
-/** Voltage sweep state machine tick — call from main loop every iteration.
- *  Implements the sweep by stepping through all source fixed PDOs, requesting
- *  each voltage, waiting 2s, then recording the INA228 measurement.
- *  axxpd_run() and IWDG refresh are the caller's responsibility (main loop). */
+/** Tool state-machine tick — call from the main loop every iteration.
+ *  Only the self-test drives a tick; axxpd_run() and IWDG refresh are the
+ *  caller's responsibility (main loop). */
 static void UI_SelftestTick(INA228_Reading_t *reading);
 
 void UI_ToolTick(INA228_Reading_t *reading)
 {
     if (tool_active == TOOL_SELFTEST && st_running && !st_done) {
         UI_SelftestTick(reading);
-        return;
     }
-    if (tool_active != TOOL_VOLTAGE_SWEEP || !sweep_running || sweep_done) return;
-
-    /* Build sorted PDO list (Fixed only for sweep — variable voltages) */
-    static uint32_t sweep_pdos[14];
-    static uint8_t  sweep_pdo_count = 0;
-
-    if (sweep_step == 0 && sweep_count == 0) {
-        /* First call: collect all fixed PDOs */
-        uint32_t raw[14];
-        uint8_t cnt = axxpd_get_src_pdos(raw, 14);
-        sweep_pdo_count = 0;
-        for (uint8_t i = 0; i < cnt && sweep_pdo_count < 14U; i++) {
-            if (raw[i] != 0U && ((raw[i] >> 30U) & 0x3U) == 0U) {
-                sweep_pdos[sweep_pdo_count++] = raw[i];
-            }
-        }
-        if (sweep_pdo_count == 0U) {
-            sweep_done = 1;
-            sweep_running = 0;
-            return;
-        }
-        /* Request first PDO */
-        uint32_t pdo = sweep_pdos[0];
-        uint32_t mv = ((pdo >> 10U) & 0x3FFU) * 50U;
-        uint32_t ma = ((pdo >>  0U) & 0x3FFU) * 10U;
-        axxpd_request_voltage(mv, ma);
-        sweep_results[0].req_mv = (uint16_t)mv;
-        sweep_results[0].meas_mv = 0;
-        sweep_results[0].meas_ma = 0;
-        sweep_results[0].pass = 0;
-        sweep_step_tick = HAL_GetTick();
-        tool_drawn = 0;  /* trigger redraw of "Sweeping..." */
-        return;
-    }
-
-    /* Wait 2 seconds at each PDO */
-    if ((HAL_GetTick() - sweep_step_tick) < 2000U) return;
-
-    /* Record measurement for current step */
-    if (reading != NULL && sweep_step < sweep_pdo_count) {
-        uint16_t meas_mv = (uint16_t)(reading->voltage_v * 1000.0f);
-        uint16_t meas_ma = (uint16_t)(reading->current_a * 1000.0f);
-        uint16_t req_mv  = sweep_results[sweep_step].req_mv;
-        uint8_t  pass    = 0;
-        /* Pass if measured V is within 10% of requested, or requested is 0 */
-        if (req_mv > 0U) {
-            uint32_t lo = (uint32_t)req_mv * 90U / 100U;
-            uint32_t hi = (uint32_t)req_mv * 110U / 100U;
-            pass = (meas_mv >= (uint16_t)lo && meas_mv <= (uint16_t)hi) ? 1U : 0U;
-        }
-        sweep_results[sweep_step].meas_mv = meas_mv;
-        sweep_results[sweep_step].meas_ma = meas_ma;
-        sweep_results[sweep_step].pass    = pass;
-        sweep_count = sweep_step + 1U;
-    }
-
-    sweep_step++;
-
-    if (sweep_step >= sweep_pdo_count) {
-        /* Sweep complete — return to first PDO (5V) */
-        if (sweep_pdo_count > 0U) {
-            uint32_t pdo = sweep_pdos[0];
-            uint32_t mv = ((pdo >> 10U) & 0x3FFU) * 50U;
-            uint32_t ma = ((pdo >>  0U) & 0x3FFU) * 10U;
-            axxpd_request_voltage(mv, ma);
-        }
-        sweep_done    = 1;
-        sweep_running = 0;
-        tool_drawn    = 0;  /* trigger redraw of results */
-        return;
-    }
-
-    /* Request next PDO */
-    uint32_t pdo = sweep_pdos[sweep_step];
-    uint32_t mv  = ((pdo >> 10U) & 0x3FFU) * 50U;
-    uint32_t ma  = ((pdo >>  0U) & 0x3FFU) * 10U;
-    axxpd_request_voltage(mv, ma);
-    sweep_results[sweep_step].req_mv  = (uint16_t)mv;
-    sweep_results[sweep_step].meas_mv = 0;
-    sweep_results[sweep_step].meas_ma = 0;
-    sweep_results[sweep_step].pass    = 0;
-    sweep_step_tick = HAL_GetTick();
-    tool_drawn = 0;  /* redraw progress display */
 }
 
 /* ------------------------------------------------------------------ */

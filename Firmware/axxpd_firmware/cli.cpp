@@ -112,9 +112,8 @@ extern "C" {
 void Output_Enable(void);
 void Output_Disable(void);
 extern volatile uint8_t g_output_enabled;
-extern volatile uint8_t g_hw_fault;
-extern volatile uint8_t g_fault_source;
 extern volatile uint32_t g_fault_suppress_until;
+/* g_hw_fault / g_fault_source already declared in the extern "C" block above */
 }
 
 static void out(const char* s) {
@@ -138,13 +137,6 @@ static void outln() { out("\r\n"); }
 struct RxLogEntry { uint32_t ordset; uint16_t size; uint16_t hdr; uint32_t do0; };
 extern volatile RxLogEntry rx_log[16];
 extern volatile uint32_t rx_log_idx;
-
-// pdsink PRL rx counter (incremented per unique non-dup received message).
-// Used by the deferred-setpdo handler to wait for visible link activity
-// after EPR entry before firing trigger_by_position.
-namespace pd {
-    extern volatile uint32_t prl_rx_new;
-}
 
 // -----------------------------------------------------------------------------
 // State
@@ -2000,7 +1992,6 @@ static bool try_shortcut(char* line) {
 
     // meas
     if (match(cmd, "MEAS", "MEASURE")) {
-        extern volatile float g_ntc_temp;
         extern I2C_HandleTypeDef hi2c3;
         INA228_Reading_t rd = {};
         HAL_StatusTypeDef rc = INA228_ReadAll(&g_ina, &rd);
@@ -3073,10 +3064,10 @@ void cli_poll() {
                         // have failed.  Enable cable_emu + ErrorRecovery so
                         // the next attempt can emulate the e-marker.
                         if (s_driver->is_cable_emu_disabled()) {
-                            out("#DBG EPR quick-fail: enabling cable_emu + CC reset\r\n");
+                            if (state_trace || axxpd_low_trace) out("#DBG EPR quick-fail: enabling cable_emu + CC reset\r\n");
                             s_driver->enable_cable_emu();
                         } else {
-                            out("#DBG EPR quick-fail: CC reset (cable_emu already on)\r\n");
+                            if (state_trace || axxpd_low_trace) out("#DBG EPR quick-fail: CC reset (cable_emu already on)\r\n");
                         }
                         s_driver->error_recovery();
                     }
@@ -3106,11 +3097,11 @@ void cli_poll() {
                 epr_want_armed = false;  // restart timer for next round
                 if (s_driver->is_cable_emu_disabled()) {
                     // First stuck: try enabling cable_emu (cable has no e-marker)
-                    out("#DBG EPR stuck: enabling cable_emu\r\n");
+                    if (state_trace || axxpd_low_trace) out("#DBG EPR stuck: enabling cable_emu\r\n");
                     s_driver->enable_cable_emu();
                 } else {
                     // Second stuck: cable_emu was already on, do full CC reset
-                    out("#DBG ErrorRecovery: EPR stuck with cable_emu on\r\n");
+                    if (state_trace || axxpd_low_trace) out("#DBG ErrorRecovery: EPR stuck with cable_emu on\r\n");
                     s_driver->error_recovery();
                 }
             }

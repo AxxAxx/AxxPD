@@ -1,10 +1,11 @@
 /**
  * @file    atomic_ops.c
- * @brief   Software atomic-operation stubs for Cortex-M0+.
+ * @brief   Software atomic-operation stubs.
  *
- * The STM32CubeIDE arm-none-eabi toolchain (13.3.rel1) does not ship
- * libatomic for Cortex-M0+.  pdsink uses std::atomic<> which the compiler
- * lowers to __atomic_* builtins on M0+ (no native LDREX/STREX on M0+).
+ * The STM32CubeIDE arm-none-eabi toolchain (13.3.rel1) does not link
+ * libatomic in this bare-metal build.  pdsink uses std::atomic<>, and for
+ * the sizes it needs the compiler emits calls to __atomic_* library
+ * routines that would otherwise be unresolved.  This file provides them.
  *
  * This is a single-core, no-RTOS firmware.  All "atomics" that pdsink needs
  * are safe to implement with IRQ-disable/enable because pdsink is called only

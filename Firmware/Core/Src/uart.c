@@ -7,8 +7,8 @@
  * @file  uart.c
  * @brief UART driver — interrupt-driven RX, blocking TX, double-buffered lines.
  *
- * USART1 is initialised by CubeMX (115200-8N1, PB6 TX / PB7 RX).
- * Call UART_Init() once after MX_USART1_UART_Init(), then poll
+ * USART2 is initialised by CubeMX (115200-8N1, half-duplex single-wire).
+ * Call UART_Init(&huart2) once after MX_USART2_UART_Init(), then poll
  * UART_HasLine() / UART_GetLine() from the main loop.
  *
  * The HAL_UART_RxCpltCallback weak override drives a double-buffered
@@ -119,7 +119,8 @@ uint16_t UART_GetLine(char *buf, uint16_t max_len)
 
 void HAL_UART_RxCpltCallback(UART_HandleTypeDef *huart)
 {
-    if (huart->Instance != s_huart->Instance) { return; }
+    /* Ignore completions before UART_Init() runs or from any other UART. */
+    if (s_huart == NULL || huart->Instance != s_huart->Instance) { return; }
 
     uint8_t byte = s_rx_byte;
     uint8_t idx = s_rx_active;

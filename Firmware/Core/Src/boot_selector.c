@@ -31,7 +31,6 @@
 #include "buttons.h"
 #include "settings.h"
 #include "buzzer.h"
-extern uint8_t CDC_Transmit_Blocking(const uint8_t*, uint16_t, uint32_t);
 #include "axxpd_main.h"
 #include "splash_logo.h"
 #include "stm32g4xx_hal.h"
@@ -232,7 +231,7 @@ static void draw_row(uint8_t row_pos, uint8_t pdo_idx,
     char buf[32];
     uint16_t y   = LIST_Y + (uint16_t)row_pos * LIST_ROW_H;
     uint16_t bg  = selected ? COL_SEL_BG  : COL_BG;
-    uint16_t fg  = selected ? COL_WHITE   : COL_WHITE;
+    uint16_t fg  = COL_WHITE;  /* selection shown via bg + cursor char, not fg */
 
     /* Row background */
     LCD_Fill(0, y, LIST_TEXT_W - 1, y + LIST_ROW_H - 1, bg);
@@ -366,11 +365,6 @@ static void draw_connecting(uint8_t dots)
  * ---------------------------------------------------------------------- */
 static uint8_t  s_src_epr_capable = 0U;
 static uint32_t s_selected_pdo = 0U;
-
-uint8_t BootSelector_SrcEprCapable(void)
-{
-    return s_src_epr_capable;
-}
 
 uint32_t BootSelector_GetSelectedPdo(void)
 {
@@ -583,9 +577,6 @@ int BootSelector_Run(void)
             if (ev != BTN_INC_REPEAT && ev != BTN_DEC_REPEAT) {
                 Buzzer_Click();  /* audible click on first press only, not repeats */
             }
-            char dbg[24];
-            snprintf(dbg, sizeof(dbg), "[BTN] ev=%u\r\n", (unsigned)ev);
-            CDC_Transmit_Blocking((const uint8_t*)dbg, (uint16_t)strlen(dbg), 50);
         }
 
         switch (ev) {
@@ -662,7 +653,8 @@ int BootSelector_Run(void)
                 {
                     uint32_t p = pdos[cursor], t = (p >> 30) & 3, mv = 0;
                     if (t == 0U) mv = ((p >> 10) & 0x3FF) * 50;
-                    else if (t == 3U) mv = ((p >> 17) & 0x1FF) * 100;
+                    else if (t == 3U && ((p >> 28) & 3) == 0) mv = ((p >> 17) & 0xFF) * 100;   /* PPS: 8-bit max V */
+                    else if (t == 3U && ((p >> 28) & 3) == 1) mv = ((p >> 17) & 0x1FF) * 100;  /* AVS: 9-bit max V */
                     if (mv > 20000U) cursor = 0U;
                 }
                 s_selected_pdo = pdos[cursor];

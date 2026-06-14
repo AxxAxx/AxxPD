@@ -158,7 +158,6 @@ PDO_RE = re.compile(
 
 CONTRACT_RE = re.compile(r"#EVT CONTRACT ")
 MEAS_RE     = re.compile(r"V=([\d.]+)\s+I=([\d.]+)")
-IDN_RE      = re.compile(r"AxxPD")
 
 
 def parse_pdo_line(line):

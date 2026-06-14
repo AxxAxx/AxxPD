@@ -52,7 +52,6 @@ const MI_Entry g_mi_table[] = {
     { MI_VERSION,         MI_NO_FLASH,                                    "Version"          },
     { MI_LOAD_DEFAULT,    MI_NO_FLASH,                                    "Load defaults"    },
     { MI_SAVE_REBOOT,     MI_NO_FLASH,                                    "Save & Reboot"    },
-    { MI_EXIT_NO_SAVE,    MI_NO_FLASH,                                    "Exit no save"     },
 };
 
 const uint8_t g_mi_table_size = sizeof(g_mi_table) / sizeof(g_mi_table[0]);
@@ -86,7 +85,7 @@ static const uint16_t calibration_items[] = {
 };
 
 static const uint16_t system_items[] = {
-    MI_VERSION, MI_LOAD_DEFAULT, MI_SAVE_REBOOT, MI_EXIT_NO_SAVE
+    MI_VERSION, MI_LOAD_DEFAULT, MI_SAVE_REBOOT
 };
 
 const MenuGroup g_menu_groups[] = {

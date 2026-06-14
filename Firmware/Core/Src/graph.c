@@ -8,8 +8,8 @@
  * @brief   Live V/I plot for the GRAPH UI screen.
  *
  * Single grid, two Y-axes: V (left, yellow), I (right, orange). 100-sample
- * rolling window with configurable sample interval: 50/100/200 ms for
- * 5s/10s/20s history (set via Settings graph_window). V axis snaps to the
+ * rolling window with configurable sample interval: 50/100/300/600 ms for
+ * 5s/10s/30s/60s history (set via Settings graph_window). V axis snaps to the
  * negotiated PD source voltage; I axis max comes from the negotiated current.
  *
  * Rendering strategy — RAM framebuffer + single DMA blit:

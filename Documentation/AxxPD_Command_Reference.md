@@ -65,7 +65,7 @@ Short, human-friendly commands for interactive use. These are the primary interf
 
 | Command | Description | Example Response |
 |---------|-------------|------------------|
-| `list` | List available source PDOs (SPR only until EPR entered) | `1,FIXED,5.000V,3.000A,SPR` |
+| `list` | List available source PDOs (SPR only until EPR entered) | `1,FIXED,5.000,3.000,SPR` |
 | `list all` | List all PDOs including EPR (auto-enters EPR if capable) | Includes PDO8+ |
 | `ct` | Show the active contract | `PDO4,FIXED,20.000V,3.000A,SPR` |
 | `meas` | Measured V, I, W, Wh, Ah, temperatures | `V=20.012 I=0.000 W=0.000 ...` |
@@ -260,7 +260,7 @@ Events are emitted automatically when state changes. All event lines are prefixe
 | Event | Description | Example |
 |-------|-------------|---------|
 | `#EVT PDO_COUNT <n>` | Number of available PDOs changed | `#EVT PDO_COUNT 7` |
-| `#EVT PDO <line>` | PDO details (emitted once on first cap reception) | `#EVT PDO 1,FIXED,5.000V,3.000A` |
+| `#EVT PDO <line>` | PDO details (emitted once on first cap reception) | `#EVT PDO 1,FIXED,5.000,3.000,SPR` |
 | `#EVT EPR_CAPABLE <0\|1>` | Source EPR capability | `#EVT EPR_CAPABLE 1` |
 | `#EVT PD_MODE <EPR\|SPR>` | PD mode changed | `#EVT PD_MODE EPR` |
 | `#EVT CONTRACT <info>` | Active contract changed | `#EVT CONTRACT PDO4,FIXED,20.000V,3.000A,SPR` |

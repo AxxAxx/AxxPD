@@ -27,8 +27,13 @@
 #define NTC_BETA     3380.0f    /* Beta constant (K)                */
 #define NTC_RPULLUP  10000.0f   /* Pull-up resistor value (Ohm)     */
 #define NTC_VREF_ADC 4095.0f    /* 12-bit full-scale count           */
+#define NTC_ADC_MAX  4095U      /* 12-bit full-scale count (integer) */
 
 #define ADC_TIMEOUT_MS  10U
+
+/* Returned on any sensor fault (timeout, open/short, impossible resistance).
+ * main.c treats this sentinel as "NTC fault" and disarms nothing silently. */
+#define NTC_FAULT_C  (-273.15f)
 
 static ADC_HandleTypeDef *s_hadc = NULL;
 
@@ -45,14 +50,14 @@ void NTC_Init(ADC_HandleTypeDef *hadc)
 float NTC_ReadTemperature(void)
 {
     if (s_hadc == NULL) {
-        return -273.15f;
+        return NTC_FAULT_C;
     }
 
     HAL_ADC_Start(s_hadc);
 
     if (HAL_ADC_PollForConversion(s_hadc, ADC_TIMEOUT_MS) != HAL_OK) {
         HAL_ADC_Stop(s_hadc);
-        return -273.15f;   /* ADC timeout — caller (main.c) should treat -273.15 as "sensor fault" */
+        return NTC_FAULT_C;   /* ADC timeout */
     }
 
     uint32_t raw = HAL_ADC_GetValue(s_hadc);
@@ -60,14 +65,12 @@ float NTC_ReadTemperature(void)
 
     /* Guard rail values: open circuit or short circuit */
     if (raw == 0U) {
-        return -273.15f;   /* NTC open — ADC pulled high, raw near 0 shouldn't happen;
-                              but if ADC reads 0, R_ntc = 0 => div-by-zero guard.
-                              Caller (main.c) should treat -273.15 as "sensor fault". */
+        return NTC_FAULT_C;   /* raw==0 => R_ntc computes as 0 (below the 100 Ohm
+                                 fault floor); treat as sensor fault. */
     }
-    if (raw >= 4095U) {
-        return -273.15f;   /* NTC short or pullup open — return sentinel so main.c
-                              treats it as sensor fault (same as ADC timeout).
-                              Also prevents division by zero: (NTC_VREF_ADC - raw) = 0. */
+    if (raw >= NTC_ADC_MAX) {
+        return NTC_FAULT_C;   /* NTC short or pullup open — also prevents division
+                                 by zero: (NTC_VREF_ADC - raw) = 0. */
     }
 
     /* R_ntc from voltage divider */
@@ -80,7 +83,7 @@ float NTC_ReadTemperature(void)
      * -60 C and 100 Ohm to far beyond +200 C; nothing on this board can be
      * there for real, so treat both extremes as a sensor fault. */
     if (r_ntc > 1.0e6f || r_ntc < 100.0f) {
-        return -273.15f;
+        return NTC_FAULT_C;
     }
 
     /* Steinhart-Hart simplified (beta equation) */

@@ -23,19 +23,23 @@
 
 static TIM_HandleTypeDef *s_htim = NULL;
 
-void Buzzer_Init(TIM_HandleTypeDef *htim)
+/* Reconfigure PA15 to TIM8_CH1 alternate-function mode for PWM output. */
+static void pa15_to_pwm(void)
 {
-    s_htim = htim;
-    /* Invert TIM8_CH1 output polarity (active-low) so the resting/stopped PWM
-     * level is LOW. The 2N7002 buzzer FET conducts on a HIGH gate; with the
-     * default active-high polarity the pin was left HIGH after a one-pulse beep
-     * (counter rests at 0 = active), keeping the MOSFET permanently conducting.
-     * Active-low makes idle LOW (FET off); the 50%-duty tone is unaffected. */
-    htim->Instance->CCER |= TIM_CCER_CC1P;
-    /* Drive PA15 low to ensure the 2N7002 buzzer MOSFET is fully off.
-     * MX_TIM8_Init puts PA15 in AF mode, but TIM8 isn't started yet,
-     * so the pin floats at an intermediate voltage → 2N7002 partially
-     * on → linear mode → hot. Reconfigure as GPIO output low. */
+    GPIO_InitTypeDef gpio = {0};
+    gpio.Pin = GPIO_PIN_15;
+    gpio.Mode = GPIO_MODE_AF_PP;
+    gpio.Pull = GPIO_NOPULL;
+    gpio.Speed = GPIO_SPEED_FREQ_LOW;
+    gpio.Alternate = GPIO_AF2_TIM8;
+    HAL_GPIO_Init(GPIOA, &gpio);
+}
+
+/* Drive PA15 low as a plain GPIO output so the 2N7002 buzzer FET is fully
+ * off. With TIM8 stopped, leaving PA15 in AF mode floats the pin → the FET
+ * sits in linear mode and heats up; this forces a defined LOW idle. */
+static void pa15_to_low(void)
+{
     GPIO_InitTypeDef gpio = {0};
     gpio.Pin = GPIO_PIN_15;
     gpio.Mode = GPIO_MODE_OUTPUT_PP;
@@ -45,19 +49,26 @@ void Buzzer_Init(TIM_HandleTypeDef *htim)
     HAL_GPIO_WritePin(GPIOA, GPIO_PIN_15, GPIO_PIN_RESET);
 }
 
+void Buzzer_Init(TIM_HandleTypeDef *htim)
+{
+    s_htim = htim;
+    /* Invert TIM8_CH1 output polarity (active-low) so the resting/stopped PWM
+     * level is LOW. The 2N7002 buzzer FET conducts on a HIGH gate; with the
+     * default active-high polarity the pin was left HIGH after a one-pulse beep
+     * (counter rests at 0 = active), keeping the MOSFET permanently conducting.
+     * Active-low makes idle LOW (FET off); the 50%-duty tone is unaffected. */
+    htim->Instance->CCER |= TIM_CCER_CC1P;
+    /* MX_TIM8_Init puts PA15 in AF mode, but TIM8 isn't started yet, so the
+     * pin would float → 2N7002 partially on → hot. Force a defined LOW idle. */
+    pa15_to_low();
+}
+
 void Buzzer_Beep(uint16_t freq_hz, uint16_t duration_ms)
 {
     if (!Settings_GetBuzzerEnabled() || s_htim == NULL || freq_hz == 0U)
         return;
 
-    /* Reconfigure PA15 back to TIM8_CH1 AF mode for PWM output */
-    GPIO_InitTypeDef gpio = {0};
-    gpio.Pin = GPIO_PIN_15;
-    gpio.Mode = GPIO_MODE_AF_PP;
-    gpio.Pull = GPIO_NOPULL;
-    gpio.Speed = GPIO_SPEED_FREQ_LOW;
-    gpio.Alternate = GPIO_AF2_TIM8;
-    HAL_GPIO_Init(GPIOA, &gpio);
+    pa15_to_pwm();
 
     /* Stop any in-progress beep */
     HAL_TIM_PWM_Stop(s_htim, TIM_CHANNEL_1);
@@ -97,14 +108,7 @@ void Buzzer_Off(void)
     if (s_htim != NULL) {
         HAL_TIM_PWM_Stop(s_htim, TIM_CHANNEL_1);
         s_htim->Instance->CR1 &= ~TIM_CR1_OPM;
-        /* Return PA15 to GPIO low so 2N7002 is fully off */
-        GPIO_InitTypeDef gpio = {0};
-        gpio.Pin = GPIO_PIN_15;
-        gpio.Mode = GPIO_MODE_OUTPUT_PP;
-        gpio.Pull = GPIO_PULLDOWN;
-        gpio.Speed = GPIO_SPEED_FREQ_LOW;
-        HAL_GPIO_Init(GPIOA, &gpio);
-        HAL_GPIO_WritePin(GPIOA, GPIO_PIN_15, GPIO_PIN_RESET);
+        pa15_to_low();
     }
 }
 
@@ -116,14 +120,8 @@ void Buzzer_Click(void)    { Buzzer_Beep(BUZZER_BASE_HZ, 20);  }
 void Buzzer_Confirm(void)  { Buzzer_Beep(BUZZER_BASE_HZ, 35);  }
 void Buzzer_Fault(void)    {
     /* Always play fault tone regardless of buzzer setting — safety critical */
-    if (s_htim == NULL || BUZZER_BASE_HZ == 0U) return;
-    GPIO_InitTypeDef gpio = {0};
-    gpio.Pin = GPIO_PIN_15;
-    gpio.Mode = GPIO_MODE_AF_PP;
-    gpio.Pull = GPIO_NOPULL;
-    gpio.Speed = GPIO_SPEED_FREQ_LOW;
-    gpio.Alternate = GPIO_AF2_TIM8;
-    HAL_GPIO_Init(GPIOA, &gpio);
+    if (s_htim == NULL) return;
+    pa15_to_pwm();
     HAL_TIM_PWM_Stop(s_htim, TIM_CHANNEL_1);
     s_htim->Instance->CR1 &= ~TIM_CR1_OPM;
     /* 2 kHz tone for 320 ms. Derive from the 1 MHz timer clock (TIM8 has a
@@ -155,13 +153,7 @@ void Buzzer_FreqSweep(void)
         /* Bypass the buzzer-enabled setting for this test */
         if (s_htim == NULL) return;
 
-        GPIO_InitTypeDef gpio = {0};
-        gpio.Pin = GPIO_PIN_15;
-        gpio.Mode = GPIO_MODE_AF_PP;
-        gpio.Pull = GPIO_NOPULL;
-        gpio.Speed = GPIO_SPEED_FREQ_LOW;
-        gpio.Alternate = GPIO_AF2_TIM8;
-        HAL_GPIO_Init(GPIOA, &gpio);
+        pa15_to_pwm();
 
         HAL_TIM_PWM_Stop(s_htim, TIM_CHANNEL_1);
         s_htim->Instance->CR1 &= ~TIM_CR1_OPM;

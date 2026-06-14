@@ -131,8 +131,9 @@ static HAL_StatusTypeDef ina228_read40(INA228_t *dev, uint8_t reg, uint64_t *out
  * @brief  Initialise the INA228.
  *
  * Verifies manufacturer ID, issues a soft reset, configures the ADC for
- * continuous bus+shunt+temp measurement with 1052 us conversion time and
- * 4x averaging, then programs SHUNT_CAL based on the supplied parameters.
+ * continuous bus+shunt+temp measurement with 50 us conversion time and
+ * averaging (see INA228_ADC_CONFIG_DEFAULT), then programs SHUNT_CAL based
+ * on the supplied parameters.
  *
  * @param  dev          Pointer to uninitialised INA228_t instance.
  * @param  hi2c         I2C peripheral handle (I2C3 -> hi2c3).
@@ -280,7 +281,7 @@ typedef struct {
     uint8_t filled;      /* number of valid samples (ramps up to MAVG_N)*/
 } mavg_t;
 
-static mavg_t filt_v, filt_i, filt_p;
+static mavg_t filt_v, filt_i;
 
 static float mavg_feed(mavg_t *f, float sample)
 {

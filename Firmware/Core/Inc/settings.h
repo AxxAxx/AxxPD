@@ -93,7 +93,6 @@ enum {
     MI_CHARGE_COMPLETE_SEC = 209,
     /* Tools group (800-899) — diagnostic tools, no flash field */
     MI_TOOL_CHARGER_INFO  = 800,
-    MI_TOOL_VOLTAGE_SWEEP = 801,
     MI_TOOL_CABLE_INFO    = 802,
     MI_TOOL_SELFTEST      = 803,
     /* Calibration group (900-999) — signed offset adjustments */
@@ -102,7 +101,6 @@ enum {
     /* System group (700-799) — actions, no flash field */
     MI_LOAD_DEFAULT     = 700,
     MI_SAVE_REBOOT      = 701,
-    MI_EXIT_NO_SAVE     = 702,
     MI_VERSION          = 703,  /* read-only: shows FW + HW version */
 };
 
@@ -131,7 +129,6 @@ void     Settings_SaveDeferred(void);    /* mark dirty; coalesced write ~2s afte
  * EPR KeepAlive (500ms deadline).  Call Settings_ProcessDeferred() from
  * the main loop; it only writes when the PD stack is idle. */
 void     Settings_ProcessDeferred(void);
-uint8_t  Settings_IsSavePending(void);
 void     Settings_LoadDefaults(void);
 
 /* Bool settings accessors */
@@ -144,9 +141,7 @@ uint8_t  Settings_GetSplashScreen(void);
 uint8_t  Settings_GetBuzzerEnabled(void);
 uint8_t  Settings_GetStartupBeep(void);
 uint8_t  Settings_GetTempFahrenheit(void);
-void     Settings_SetTempFahrenheit(uint8_t val);
 uint8_t  Settings_GetGraphWindow(void);
-void     Settings_SetGraphWindow(uint8_t val);
 
 void     Settings_SetBool(uint8_t fi, uint8_t val);
 uint8_t  Settings_GetBool(uint8_t fi);
@@ -156,11 +151,9 @@ uint32_t Settings_GetLastVoltage(void);
 uint32_t Settings_GetLastCurrent(void);
 void     Settings_SaveLastSettings(uint32_t mv, uint32_t ma);
 uint8_t  Settings_GetLastUsedPdo(void);
-void     Settings_SetLastUsedPdo(uint8_t pdo);
 
 /* Preset accessors */
 Preset_t* Settings_GetPreset(uint8_t index);
-uint8_t  Settings_PresetCount(void);
 uint8_t  Settings_PresetIsEmpty(uint8_t index);
 void     Settings_PresetSet(uint8_t index, uint32_t mv, uint32_t ma, const char *name);
 void     Settings_PresetDelete(uint8_t index);
@@ -173,7 +166,6 @@ uint16_t Settings_GetTimerSeconds(void);
 uint32_t Settings_GetAhLimitMah(void);
 uint32_t Settings_GetWhLimitMwh(void);
 uint8_t  Settings_GetOcpRetry(void);
-void     Settings_SetOcpRetry(uint8_t val);
 uint16_t Settings_GetChargeCompleteMa(void);
 uint16_t Settings_GetChargeCompleteSec(void);
 int16_t  Settings_GetCalVOffsetUv(void);

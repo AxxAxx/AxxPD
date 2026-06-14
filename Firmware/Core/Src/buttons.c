@@ -20,17 +20,7 @@
  */
 
 #include "buttons.h"
-#include "main.h"
-
-/* Fault pin globals — still handled via EXTI falling edge.
- * These live in main.c and are shared with the fault EXTI callback at the
- * bottom of this file plus the main-loop fault handler.  All are volatile
- * because they are written from ISR context. */
-extern volatile uint8_t g_output_enabled;
-extern volatile uint8_t g_hw_fault;
-extern volatile uint8_t g_fault_source;       /* sequential enum (use == not &) */
-extern volatile uint8_t g_fault_pending_beep;
-extern volatile uint32_t g_fault_suppress_until;  /* HAL_GetTick() deadline — ignore faults until then */
+#include "main.h"   /* BUTTON_*_GPIO_Port / _Pin macros */
 
 /* -------------------------------------------------------------------------
  * Timing constants (in 5ms ticks)

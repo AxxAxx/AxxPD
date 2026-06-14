@@ -31,8 +31,6 @@ float    axxpd_get_negotiated_v(void);
 float    axxpd_get_negotiated_a(void);
 uint8_t  axxpd_get_active_pdo_index(void);  /* 1-based, 0 = no contract */
 uint8_t  axxpd_is_pps_active(void);
-uint32_t axxpd_get_pps_mv(void);
-uint32_t axxpd_get_pps_ma(void);
 uint8_t  axxpd_is_epr_active(void);
 uint8_t  axxpd_is_src_epr_capable(void);
 
@@ -47,7 +45,6 @@ uint8_t  axxpd_get_cable_info(uint8_t *type, uint8_t *max_current,
 /* Control */
 void     axxpd_request_voltage(uint32_t mv, uint32_t ma);
 void     axxpd_request_pdo_position(uint8_t position);
-void     axxpd_hard_reset(void);
 void     axxpd_enable_epr(void);
 void     axxpd_disable_epr_intent(void);
 void     axxpd_enable_cable_emu(void);
