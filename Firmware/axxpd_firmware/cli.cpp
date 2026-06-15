@@ -56,6 +56,12 @@ void OVP_SetThreshold(uint32_t vbus_max_mv);
 
 #include "axxpd_main.h"
 
+// USB-PD legal bounds for a requested source target. Used to reject out-of-range
+// voltage/current before they reach the DPM or get persisted as "last V/I".
+#define PD_TARGET_MV_MIN  3300U    // PPS floor
+#define PD_TARGET_MV_MAX  48000U   // EPR ceiling
+#define PD_TARGET_MA_MAX  6000U
+
 // Helper: convert Celsius to display temperature respecting the settings toggle
 static inline float temp_display(float celsius) {
     if (Settings_GetTempFahrenheit())
@@ -1155,6 +1161,12 @@ static void do_sour_volt(const char* arg, bool query) {
     }
     uint32_t v;
     if (!parse_numeric_unit(arg, 'V', &v)) { err_push(-222, "Data out of range"); return; }
+    // Clamp to USB-PD legal bounds before feeding the DPM / persisting; otherwise
+    // a stray ":SOUR:VOLT 900" arms a nonsense 900 V target and writes it to
+    // last_voltage_mv, restored on next boot.
+    if (v < PD_TARGET_MV_MIN || v > PD_TARGET_MV_MAX) {
+        err_push(-222, "voltage out of range (3.3-48V)"); return;
+    }
     target_mv = v;
     apply_source_target();
 }
@@ -1168,6 +1180,8 @@ static void do_sour_curr(const char* arg, bool query) {
     }
     uint32_t v;
     if (!parse_numeric_unit(arg, 'A', &v)) { err_push(-222, "Data out of range"); return; }
+    // 0 mA = "request the PDO's max"; otherwise cap at the PD ceiling.
+    if (v > PD_TARGET_MA_MAX) { err_push(-222, "current out of range (0-6A)"); return; }
     target_ma = v;
     apply_source_target();
 }
@@ -1251,30 +1265,41 @@ static void do_meas_ener() {
     out(b);
 }
 
-// do_protect_ocp() — set INA228 alert over-current threshold
+// do_protect_ocp() — set INA228 alert over-current threshold.
+// Persists via Settings (which clamps to 100..6000 mA) then arms the hardware
+// from the stored value, so the live comparator and :CONF:OCP? never disagree.
 static void do_protect_ocp(const char* arg) {
     if (!arg || !*arg) { err_push(-109, "Missing parameter"); return; }
     uint32_t ma = 0;
     if (!parse_numeric_unit(arg, 'A', &ma)) { err_push(-222, "bad current"); return; }
-    if (ma < 100U) { err_push(-222, "OCP minimum is 0.1A"); return; }
-    if (ma > 7000U) { err_push(-222, "OCP maximum is 7A"); return; }
-    float amps = (float)ma / 1000.0f;
-    INA228_SetAlertOverCurrent(&g_ina, amps);
-    // Sync persistent settings so :CONF:OCP? reflects the new value
+    if (ma < 100U)  { err_push(-222, "OCP minimum is 0.1A"); return; }
+    if (ma > 6000U) { err_push(-222, "OCP maximum is 6A"); return; }
     int32_t diff = (int32_t)ma - (int32_t)Settings_GetOcpMa();
     int32_t steps = diff / 100;
     if (steps != 0) Settings_SetNumeric(MI_OCP_LIMIT, steps);
-    char b[32]; snprintf(b, sizeof(b), "OCP set to %.1fA\r\n", (double)amps);
+    INA228_SetAlertOverCurrent(&g_ina, (float)Settings_GetOcpMa() / 1000.0f);
+    char b[32]; snprintf(b, sizeof(b), "OCP set to %.1fA\r\n",
+                         (double)Settings_GetOcpMa() / 1000.0);
     out(b);
 }
 
-// do_protect_ovp() — set OVP threshold
+// do_protect_ovp() — set OVP threshold.
+// Validates the range, persists via Settings (clamps to 5000..55000 mV) then
+// arms the comparator from the stored value so the two can't desync. Without a
+// range check, "protect ovp 1000" would set a 1000 V trip and silently defeat
+// over-voltage protection entirely.
 static void do_protect_ovp(const char* arg) {
     if (!arg || !*arg) { err_push(-109, "Missing parameter"); return; }
     uint32_t mv = 0;
     if (!parse_numeric_unit(arg, 'V', &mv)) { err_push(-222, "bad voltage"); return; }
-    OVP_SetThreshold(mv);
-    char b[32]; snprintf(b, sizeof(b), "OVP set to %luV\r\n", (unsigned long)(mv / 1000));
+    if (mv < 5000U)  { err_push(-222, "OVP minimum is 5V"); return; }
+    if (mv > 55000U) { err_push(-222, "OVP maximum is 55V"); return; }
+    int32_t diff = (int32_t)mv - (int32_t)Settings_GetOvpMv();
+    int32_t steps = diff / 1000;
+    if (steps != 0) Settings_SetNumeric(MI_OVP_LIMIT, steps);
+    OVP_SetThreshold(Settings_GetOvpMv());
+    char b[32]; snprintf(b, sizeof(b), "OVP set to %luV\r\n",
+                         (unsigned long)(Settings_GetOvpMv() / 1000));
     out(b);
 }
 
@@ -2274,6 +2299,7 @@ static bool try_shortcut(char* line) {
         if (nt < 2) { err_push(-109, "Missing parameter"); out("Usage: set <V> [<A>]\r\n"); return true; }
         uint32_t mv = 0;
         if (!parse_numeric_unit(tok[1], 'V', &mv) || mv == 0) { err_push(-222, "bad voltage"); out("Invalid voltage\r\n"); return true; }
+        if (mv > PD_TARGET_MV_MAX) { err_push(-222, "voltage out of range (max 48V)"); out("Invalid voltage\r\n"); return true; }
 
         // Auto-enter EPR if the requested voltage is in the EPR range and
         // we're not already there. SPR caps only show up to 20-21 V, so a
@@ -2286,7 +2312,7 @@ static bool try_shortcut(char* line) {
             user_wants_epr = true;
             target_mv = mv;
             target_ma = 0;
-            if (nt >= 3) { uint32_t a; if (parse_numeric_unit(tok[2], 'A', &a)) target_ma = a; }
+            if (nt >= 3) { uint32_t a; if (parse_numeric_unit(tok[2], 'A', &a) && a <= PD_TARGET_MA_MAX) target_ma = a; }
             // source_mode left at whatever the user picked; AUTO by default.
             s_dpm->trigger_any(target_mv, target_ma);  // pre-arm for after entry
             s_port->pe_flags.clear(pd::PE_FLAG::EPR_AUTO_ENTER_DISABLED);
@@ -2812,10 +2838,13 @@ static void dispatch_one(char* line) {
             } else if (arg) {
                 uint32_t ma = 0;
                 if (parse_numeric_unit(arg, 'A', &ma)) {
-                    // Settings_SetNumeric uses delta steps of 100 mA
+                    // Settings_SetNumeric uses delta steps of 100 mA and clamps
+                    // the result; arm the hardware from the stored value so the
+                    // live comparator matches :CONF:OCP?.
                     int32_t diff = (int32_t)ma - (int32_t)Settings_GetOcpMa();
                     int32_t steps = diff / 100;
                     if (steps != 0) Settings_SetNumeric(MI_OCP_LIMIT, steps);
+                    INA228_SetAlertOverCurrent(&g_ina, (float)Settings_GetOcpMa() / 1000.0f);
                     out("OK\r\n");
                 } else {
                     err_push(-222, "bad current value");
@@ -2831,10 +2860,13 @@ static void dispatch_one(char* line) {
             } else if (arg) {
                 uint32_t mv = 0;
                 if (parse_numeric_unit(arg, 'V', &mv)) {
-                    // Settings_SetNumeric uses delta steps of 1000 mV
+                    // Settings_SetNumeric uses delta steps of 1000 mV and clamps
+                    // the result; arm the comparator from the stored value so the
+                    // live threshold matches :CONF:OVP?.
                     int32_t diff = (int32_t)mv - (int32_t)Settings_GetOvpMv();
                     int32_t steps = diff / 1000;
                     if (steps != 0) Settings_SetNumeric(MI_OVP_LIMIT, steps);
+                    OVP_SetThreshold(Settings_GetOvpMv());
                     out("OK\r\n");
                 } else {
                     err_push(-222, "bad voltage value");

@@ -197,7 +197,7 @@ Rolling V/I plot (10 s window). Column-based rendering for fast SPI updates. 15 
 5 named user slots. Select and activate with one button press. Stored in flash.
 
 **Screen 5 -- Energy:**
-Session dashboard: live V/A/W, runtime since reset, accumulated mAh/Wh, plus average and peak current/power for the session. Long-press SELECT to reset everything.
+Session dashboard: live V/A/W, runtime since reset, accumulated Ah/Wh, plus average and peak current/power for the session. Long-press SELECT to reset everything.
 
 **Screen 6 -- Settings:**
 7 groups with scrollable menus: Mode, Display, Sound, Protection, Tools, Calibration, System.

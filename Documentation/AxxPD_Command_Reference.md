@@ -116,8 +116,8 @@ set 9V 2A               # auto-select with current limit
 | Command | Description |
 |---------|-------------|
 | `protect` or `protect status` | Show current protection status and thresholds |
-| `protect ocp <A>` | Set over-current protection threshold (0.1-7 A) |
-| `protect ovp <V>` | Set over-voltage protection threshold |
+| `protect ocp <A>` | Set over-current protection threshold (0.1-6 A) |
+| `protect ovp <V>` | Set over-voltage protection threshold (5-55 V) |
 | `protect clear` | Clear fault latch |
 
 ### Sequences
@@ -190,9 +190,9 @@ Standard Commands for Programmable Instruments. Use these for automated scriptin
 
 | Command | Description |
 |---------|-------------|
-| `:SOUR:VOLT <value>` | Set target voltage |
+| `:SOUR:VOLT <value>` | Set target voltage (3.3-48 V) |
 | `:SOUR:VOLT?` | Query target voltage |
-| `:SOUR:CURR <value>` | Set target current limit |
+| `:SOUR:CURR <value>` | Set target current limit (0-6 A) |
 | `:SOUR:CURR?` | Query target current |
 | `:SOUR:MODE <mode>` | Set PDO type filter (AUTO/FIX/PPS/AVS) |
 | `:SOUR:MODE?` | Query current mode |

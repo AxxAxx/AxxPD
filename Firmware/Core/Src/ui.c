@@ -825,13 +825,11 @@ static void UI_DrawPresets(float ntc_temp, uint8_t output_on)
 /*  y=77  |  1.234A   |  15.25 W |  (two columns: current + power)    */
 /*  y=103 |  0.123 Ah | 1.234 Wh |  (two columns: charge + energy)    */
 /* ------------------------------------------------------------------ */
-/* Format an accumulated charge: mAh below 1 Ah, then Ah with 3 sig figs. */
+/* Format an accumulated charge in Ah with 3 sig figs. */
 static void fmt_charge(char *buf, size_t sz, float ah)
 {
     if (ah < 0.0f) ah = 0.0f;
-    if (ah < 0.9995f)
-        snprintf(buf, sz, "%.0fmAh", (double)(ah * 1000.0f));
-    else if (ah < 9.995f)
+    if (ah < 9.995f)
         snprintf(buf, sz, "%.3fAh", (double)ah);
     else if (ah < 99.95f)
         snprintf(buf, sz, "%.1fAh", (double)ah);
@@ -897,23 +895,21 @@ static void UI_DrawEnergy(INA228_Reading_t *r, float ntc_temp, uint8_t output_on
         snprintf(buf, sizeof(buf), "%-9s", num);
         LCD_PutStr(NRG_COL_R, CONTENT_Y + 44, buf, FONT_MD, COL_POWER, COL_BG);
 
-        /* Averages since reset (meaningless in the first seconds) */
-        if (secs >= 10U) {
-            float hours = (float)secs / 3600.0f;
-            fmt_3sig(num, sizeof(num), r->charge_ah / hours, "A", "");
+        /* Averages since reset.  In the first seconds the rate is too noisy
+         * to be meaningful, so show 0 (a fixed-width number) rather than a
+         * shorter "--" placeholder that would leave the wider populated value
+         * (and its unit) half-overwritten on screen. */
+        {
+            float hours = (secs >= 10U) ? ((float)secs / 3600.0f) : 0.0f;
+            float avg_a = (hours > 0.0f) ? (r->charge_ah / hours) : 0.0f;
+            fmt_3sig(num, sizeof(num), avg_a, "A", "");
             snprintf(buf, sizeof(buf), "avg %s ", num);
-        } else {
-            snprintf(buf, sizeof(buf), "avg --      ");
-        }
-        LCD_PutStr(DRAW_X, CONTENT_Y + 70, buf, FONT_SM, COL_CURRENT, COL_BG);
-        if (secs >= 10U) {
-            float hours = (float)secs / 3600.0f;
-            fmt_3sig(num, sizeof(num), r->energy_wh / hours, "W", "");
+            LCD_PutStr(DRAW_X, CONTENT_Y + 70, buf, FONT_SM, COL_CURRENT, COL_BG);
+            float avg_w = (hours > 0.0f) ? (r->energy_wh / hours) : 0.0f;
+            fmt_3sig(num, sizeof(num), avg_w, "W", "");
             snprintf(buf, sizeof(buf), "avg %s ", num);
-        } else {
-            snprintf(buf, sizeof(buf), "avg --      ");
+            LCD_PutStr(NRG_COL_R, CONTENT_Y + 70, buf, FONT_SM, COL_POWER, COL_BG);
         }
-        LCD_PutStr(NRG_COL_R, CONTENT_Y + 70, buf, FONT_SM, COL_POWER, COL_BG);
     }
 
     /* Peaks since reset */

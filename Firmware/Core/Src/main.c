@@ -85,6 +85,15 @@ volatile uint8_t  g_usb_initialized = 0;
 static volatile uint8_t  ocp_retry_count   = 0;    /* retries attempted so far */
 static volatile uint32_t ocp_retry_tick    = 0;    /* tick when last OCP trip occurred */
 static volatile uint8_t  ocp_retry_pending = 0;    /* 1 = waiting to re-enable output */
+#define OCP_RETRY_DELAY_MS    200U   /* settle time after a trip before re-enable */
+#define OCP_RETRY_SUPPRESS_MS 500U   /* fault-suppression window after re-enable */
+/* A retry only counts as "recovered" (and resets the counter) if the output
+ * survived well past one full retry cycle (delay + suppression) without
+ * re-tripping.  This MUST exceed OCP_RETRY_DELAY_MS + OCP_RETRY_SUPPRESS_MS:
+ * on a sustained short the next trip lands ~700ms after the previous one (right
+ * when suppression lifts), so a shorter window would reset the counter every
+ * cycle and retry into the short forever instead of latching off. */
+#define OCP_RETRY_RESET_MS    1500U
 
 /* --- Output toggle cooldown (MOSFET thermal protection) --- */
 static uint32_t g_output_enable_tick = 0; /* tick of last Output_Enable() call */
@@ -836,11 +845,12 @@ int main(void)
        * We re-enable manually here instead of calling Output_Enable()
        * because Output_Enable() resets ocp_retry_count and the fault
        * suppression window — that would defeat the retry counter. */
-      if (ocp_retry_pending && !g_hw_fault && (int32_t)(now - ocp_retry_tick) >= 200) {
+      if (ocp_retry_pending && !g_hw_fault &&
+          (int32_t)(now - ocp_retry_tick) >= (int32_t)OCP_RETRY_DELAY_MS) {
           ocp_retry_pending = 0;
           ocp_retry_count++;
           INA228_ClearAlertLatch(&g_ina);
-          g_fault_suppress_until = now + 500U;
+          g_fault_suppress_until = now + OCP_RETRY_SUPPRESS_MS;
           cc_low_since = 0;
           HAL_GPIO_WritePin(BLEED_CTRL_GPIO_Port, BLEED_CTRL_Pin, GPIO_PIN_RESET);
           HAL_GPIO_WritePin(LTC4368_SHDN_GPIO_Port, LTC4368_SHDN_Pin, GPIO_PIN_SET);
@@ -1840,9 +1850,11 @@ static void ocp_handle_trip(uint8_t fault_source) {
                     : (max_retries == 1) ? 1 : 3;
     uint32_t now = HAL_GetTick();
 
-    /* If a recent OCP retry succeeded (>500ms since last trip), reset the
-     * counter — the previous trip was just inrush. */
-    if (ocp_retry_count > 0 && (now - ocp_retry_tick) > 500U) {
+    /* Reset the counter only if the output survived a full retry cycle plus
+     * margin since the last trip — i.e. the previous trip was genuinely just
+     * inrush, not a sustained short re-tripping each cycle.  See
+     * OCP_RETRY_RESET_MS for why this must exceed the retry+suppression cycle. */
+    if (ocp_retry_count > 0 && (now - ocp_retry_tick) > OCP_RETRY_RESET_MS) {
         ocp_retry_count = 0;
     }
 
