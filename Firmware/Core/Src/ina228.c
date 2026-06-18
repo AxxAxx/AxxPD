@@ -202,6 +202,32 @@ HAL_StatusTypeDef INA228_Init(INA228_t *dev, I2C_HandleTypeDef *hi2c,
     return HAL_OK;
 }
 
+/* Raw register -> physical value, applying the user calibration offset and the
+ * non-negative clamp.  Single source of truth shared by INA228_ReadVoltage,
+ * INA228_ReadCurrent and INA228_ReadAll so every entry point returns the same
+ * calibrated value (the standalone readers previously skipped calibration). */
+static float ina228_vbus_from_raw(uint32_t raw)
+{
+    /* VBUS reg 0x05: [23:4] = 20-bit unsigned, [3:0] = reserved.  LSB = 195.3125 uV. */
+    uint32_t vbus_counts = (raw >> 4) & 0x000FFFFFU;
+    float v = (float)vbus_counts * 195.3125e-6f;
+    v += (float)Settings_GetCalVOffsetUv() / 1e6f;   /* calibration offset (uV) */
+    return (v < 0.0f) ? 0.0f : v;
+}
+
+static float ina228_current_from_raw(uint32_t raw, float current_lsb)
+{
+    /* CURRENT reg 0x07: [23:4] = 20-bit two's complement, [3:0] = reserved.
+     * Bit 19 is the sign bit; sign-extend to 32 bits for negative values. */
+    int32_t counts = (int32_t)((raw >> 4) & 0x000FFFFFU);
+    if (counts & 0x00080000) {
+        counts |= (int32_t)0xFFF00000;
+    }
+    float i = (float)counts * current_lsb;
+    i += (float)Settings_GetCalIOffsetUa() / 1e6f;   /* calibration offset (uA) */
+    return (i < 0.0f) ? 0.0f : i;                     /* sole negative gate */
+}
+
 /**
  * @brief  Read bus voltage only.
  * @param  dev       INA228 device handle.
@@ -216,10 +242,7 @@ HAL_StatusTypeDef INA228_ReadVoltage(INA228_t *dev, float *voltage_v)
         return ret;
     }
 
-    /* VBUS reg 0x05: [23:4] = 20-bit unsigned, [3:0] = reserved.
-     * LSB = 195.3125 uV.  Shift right 4, mask to 20 bits. */
-    uint32_t vbus_counts = (raw >> 4) & 0x000FFFFFU;
-    *voltage_v = (float)vbus_counts * 195.3125e-6f;
+    *voltage_v = ina228_vbus_from_raw(raw);
 
     return HAL_OK;
 }
@@ -238,15 +261,7 @@ HAL_StatusTypeDef INA228_ReadCurrent(INA228_t *dev, float *current_a)
         return ret;
     }
 
-    /* CURRENT reg 0x07: [23:4] = 20-bit two's complement, [3:0] = reserved.
-     * LSB = current_lsb (configured by SHUNT_CAL).
-     * Bit 19 is the sign bit; sign-extend to 32 bits for negative values. */
-    int32_t current_counts = (int32_t)(raw >> 4) & 0x000FFFFF;
-    if (current_counts & 0x00080000) {
-        current_counts |= (int32_t)0xFFF00000;
-    }
-
-    *current_a = (float)current_counts * dev->current_lsb;
+    *current_a = ina228_current_from_raw(raw, dev->current_lsb);
 
     return HAL_OK;
 }
@@ -307,10 +322,16 @@ HAL_StatusTypeDef INA228_ReadAll(INA228_t *dev, INA228_Reading_t *reading)
     uint32_t raw24;
     uint64_t raw40;
 
-    /* Clear any sticky HAL error from prior failed transactions so the
-     * next Master_Transmit/Receive doesn't refuse to run. */
-    if (dev->hi2c->ErrorCode != HAL_I2C_ERROR_NONE) {
-        dev->hi2c->ErrorCode = HAL_I2C_ERROR_NONE;
+    /* Recover from a sticky HAL error left by a prior failed transaction.
+     * Clearing only ErrorCode is not enough: a transaction aborted mid-flight
+     * can leave the handle BUSY/locked, after which every HAL_I2C_Mem_Read
+     * returns HAL_BUSY and all readings freeze until reset. Re-initialising the
+     * peripheral resets State, Mode, the lock and ErrorCode together. The
+     * INA228's own registers are untouched, so no re-configuration is needed. */
+    if (dev->hi2c->ErrorCode != HAL_I2C_ERROR_NONE ||
+        dev->hi2c->State != HAL_I2C_STATE_READY) {
+        HAL_I2C_DeInit(dev->hi2c);
+        HAL_I2C_Init(dev->hi2c);
     }
 
     /* --- Bus Voltage (reg 0x05, 24-bit read) --------------------------------
@@ -320,12 +341,7 @@ HAL_StatusTypeDef INA228_ReadAll(INA228_t *dev, INA228_Reading_t *reading)
      * clamping here is defensive and costs nothing. */
     ret = ina228_read24(dev, INA228_REG_VBUS, &raw24);
     if (ret != HAL_OK) { return ret; }
-    uint32_t vbus_counts = (raw24 >> 4) & 0x000FFFFFU;
-    float v = (float)vbus_counts * 195.3125e-6f;
-    /* Apply voltage calibration offset (in microvolts) before moving average */
-    float cal_v = (float)Settings_GetCalVOffsetUv() / 1e6f;
-    v += cal_v;
-    if (v < 0.0f) v = 0.0f;
+    float v = ina228_vbus_from_raw(raw24);   /* calibrated + clamped >= 0 */
     reading->voltage_v = mavg_feed(&filt_v, v);
     if (ina228_idle_cb) ina228_idle_cb();  /* let PD stack poll between reads */
 
@@ -341,15 +357,7 @@ HAL_StatusTypeDef INA228_ReadAll(INA228_t *dev, INA228_Reading_t *reading)
      * a negative current.  This is the sole place negatives are suppressed. */
     ret = ina228_read24(dev, INA228_REG_CURRENT, &raw24);
     if (ret != HAL_OK) { return ret; }
-    int32_t current_counts = (int32_t)((raw24 >> 4) & 0x000FFFFFU);
-    if (current_counts & 0x00080000) {       /* sign bit set? */
-        current_counts |= (int32_t)0xFFF00000;  /* extend sign to bits [31:20] */
-    }
-    float i = (float)current_counts * dev->current_lsb;
-    /* Apply current calibration offset (in microamps) before moving average */
-    float cal_i = (float)Settings_GetCalIOffsetUa() / 1e6f;
-    i += cal_i;
-    if (i < 0.0f) i = 0.0f;                 /* clamp: sole negative gate */
+    float i = ina228_current_from_raw(raw24, dev->current_lsb);  /* calibrated + clamped >= 0 */
     reading->current_a = mavg_feed(&filt_i, i);
     if (ina228_idle_cb) ina228_idle_cb();
 
