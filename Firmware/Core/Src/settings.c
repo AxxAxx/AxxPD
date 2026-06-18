@@ -29,6 +29,7 @@
 #include "stm32g4xx_hal.h"
 #include <string.h>
 #include <stddef.h>
+#include <stddef.h>
 
 /* ---------- Flash geometry ---------- */
 /* STM32G491 single-bank: bank 1 = 0x0800_0000..0x0803_FFFF (256 KB, pages 0-127)
@@ -398,12 +399,34 @@ uint8_t Settings_GetStartupBeep(void)     { return settings.startup_beep;    }
 uint8_t Settings_GetTempFahrenheit(void)  { return settings.temp_fahrenheit; }
 uint8_t Settings_GetGraphWindow(void)    { return settings.graph_window; }
 
+/** Whitelist of byte offsets that are genuine 1-byte boolean fields.
+ *  Restricting Get/SetBool to these prevents a stray fi (e.g. an offset into a
+ *  multi-byte numeric field like ovp_mv or ah_limit_mah) from reading or
+ *  clobbering a packed value via the generic boolean path. */
+static int settings_is_bool_offset(uint8_t fi)
+{
+    switch (fi) {
+    case offsetof(Settings_t, remember_boot):
+    case offsetof(Settings_t, power_on_boot):
+    case offsetof(Settings_t, start_locked):
+    case offsetof(Settings_t, boot_selector):
+    case offsetof(Settings_t, serial_terminal):
+    case offsetof(Settings_t, splash_screen):
+    case offsetof(Settings_t, temp_fahrenheit):
+    case offsetof(Settings_t, buzzer_enabled):
+    case offsetof(Settings_t, startup_beep):
+        return 1;
+    default:
+        return 0;
+    }
+}
+
 /** Set a boolean field by its byte offset (fi) within Settings_t.
  *  Used by the menu system to toggle settings generically without
  *  needing a separate setter for each field. */
 void Settings_SetBool(uint8_t fi, uint8_t val)
 {
-    if (fi >= sizeof(Settings_t)) return;
+    if (!settings_is_bool_offset(fi)) return;
     uint8_t *base = (uint8_t *)&settings;
     base[fi] = val ? 1U : 0U;
 }
@@ -411,7 +434,7 @@ void Settings_SetBool(uint8_t fi, uint8_t val)
 /** Read a boolean field by its byte offset (fi) within Settings_t. */
 uint8_t Settings_GetBool(uint8_t fi)
 {
-    if (fi >= sizeof(Settings_t)) return 0;
+    if (!settings_is_bool_offset(fi)) return 0;
     const uint8_t *base = (const uint8_t *)&settings;
     return base[fi];
 }
