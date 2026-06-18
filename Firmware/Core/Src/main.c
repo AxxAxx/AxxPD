@@ -77,6 +77,13 @@ UART_HandleTypeDef huart2;
 volatile uint8_t  g_output_enabled = 0;
 volatile uint8_t  g_hw_fault = 0;
 volatile uint8_t  g_fault_source = FAULT_NONE;
+/* Monotonic counter bumped on every new fault instance (in FaultLog_Push,
+ * which every fault site calls). The UI uses it instead of a g_hw_fault
+ * rising edge to decide when to (re)show the fault overlay, so a fault that
+ * re-asserts within one UI frame — e.g. dismissing a fault whose cause is
+ * still physically present — correctly re-displays instead of reverting to
+ * the normal screen. */
+volatile uint32_t g_fault_seq = 0;
 volatile uint8_t  g_fault_pending_beep = 0;
 volatile uint32_t g_fault_suppress_until = 0;
 volatile uint8_t  g_usb_initialized = 0;
@@ -847,14 +854,24 @@ int main(void)
        * suppression window — that would defeat the retry counter. */
       if (ocp_retry_pending && !g_hw_fault &&
           (int32_t)(now - ocp_retry_tick) >= (int32_t)OCP_RETRY_DELAY_MS) {
-          ocp_retry_pending = 0;
-          ocp_retry_count++;
+          /* Slow I2C latch-clear and bleed-disable happen first, outside the
+           * critical section (they must not run with IRQs masked). */
           INA228_ClearAlertLatch(&g_ina);
-          g_fault_suppress_until = now + OCP_RETRY_SUPPRESS_MS;
           cc_low_since = 0;
           HAL_GPIO_WritePin(BLEED_CTRL_GPIO_Port, BLEED_CTRL_Pin, GPIO_PIN_RESET);
+          /* Re-arm atomically w.r.t. the OCP EXTI/COMP ISR: open the suppression
+           * window BEFORE driving SHDN, and update the retry bookkeeping and
+           * g_output_enabled as one indivisible step. Splitting these let an ISR
+           * observe an inconsistent mix (output driven but g_output_enabled
+           * still 0), dropping a fresh trip instead of deferring it to the
+           * post-suppression poll. */
+          __disable_irq();
+          g_fault_suppress_until = now + OCP_RETRY_SUPPRESS_MS;
+          ocp_retry_pending = 0;
+          ocp_retry_count++;
           HAL_GPIO_WritePin(LTC4368_SHDN_GPIO_Port, LTC4368_SHDN_Pin, GPIO_PIN_SET);
           g_output_enabled = 1;
+          __enable_irq();
           if (Settings_GetTimerSeconds() > 0) Timer_Start();
       }
 
@@ -1930,6 +1947,7 @@ void FaultLog_Push(uint8_t source, uint16_t mv, uint16_t ma) {
     g_fault_log[idx].current_ma = ma;
     g_fault_log_head = (idx + 1) % FAULT_LOG_SIZE;
     if (g_fault_log_count < FAULT_LOG_SIZE) g_fault_log_count++;
+    g_fault_seq++;   /* new fault instance — re-arms the UI fault overlay */
     __set_PRIMASK(primask);
 }
 

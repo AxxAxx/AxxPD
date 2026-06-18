@@ -186,6 +186,7 @@ extern void App_SetTargetVoltage(uint32_t mv, uint32_t ma);
 extern void OVP_SetThreshold(uint32_t vbus_max_mv);
 extern volatile uint8_t g_hw_fault;       /* set by HW fault ISR, cleared by UI ack */
 extern volatile uint8_t g_fault_source;   /* sequential fault code: FAULT_COMP_OVP, FAULT_LTC4368, etc. */
+extern volatile uint32_t g_fault_seq;     /* bumped on every new fault instance (FaultLog_Push) */
 extern volatile uint8_t g_output_enabled;
 extern INA228_t g_ina;
 
@@ -217,9 +218,21 @@ static uint32_t    flash_msg_tick = 0;
 static uint32_t    flash_msg_life = 2000U;
 static uint16_t    flash_msg_color = COL_GREEN;
 
-/* Fault overlay state — fault_acked lets the user dismiss the overlay
- * while g_hw_fault remains set until main.c clears the HW condition. */
-static uint8_t     fault_acked = 0;
+/* Fault overlay state.  s_fault_acked_seq holds the g_fault_seq value the
+ * user last dismissed with SELECT.  A fault is "unacknowledged" — and the
+ * red overlay/status bar are shown — whenever a hardware fault is active
+ * AND a newer fault instance has been logged since that dismiss.  Keying off
+ * the monotonic sequence (not a g_hw_fault rising edge) means a fault that
+ * re-asserts within one UI frame still re-displays: dismissing a fault whose
+ * cause is still present used to silently revert to the normal screen and
+ * draw live readings over the half-erased red overlay. */
+static uint32_t    s_fault_acked_seq = 0;
+
+/* True while there is an active, unacknowledged hardware fault. */
+static inline uint8_t UI_FaultActive(void)
+{
+    return (uint8_t)(g_hw_fault && (g_fault_seq != s_fault_acked_seq));
+}
 
 /* Incremental redraw tracking — 0xFF sentinel means "force full redraw".
  * Each list screen compares prev vs. current cursor/scroll to skip
@@ -323,7 +336,7 @@ static void UI_DrawStatusBar(uint8_t output_on, float ntc_temp)
     uint16_t bar_bg, bar_fg;
 
     /* Background color encodes system state visually */
-    if (g_hw_fault && !fault_acked) {
+    if (UI_FaultActive()) {
         bar_bg = RGB(180,0,0); bar_fg = COL_WHITE;           /* red = fault */
     } else if (output_on) {
         bar_bg = RGB(90,220,90); bar_fg = COL_BLACK;         /* bright green = on */
@@ -343,7 +356,7 @@ static void UI_DrawStatusBar(uint8_t output_on, float ntc_temp)
     /* Text is drawn with matching bgcolor so it overwrites in-place (no flicker).
      * Bottom-aligned within the 30px bar (font is 18px, 4px pad from bottom). */
     #define SBAR_TY  (STATUSBAR_H - 18)
-    if (g_hw_fault && !fault_acked) {
+    if (UI_FaultActive()) {
         LCD_PutStr(DRAW_X, SBAR_TY, "FAULT! HW PROTECTION              ", FONT_SM, COL_WHITE, bar_bg);
     } else {
         /* Show PD mode (SPR/PPS/EPR) and negotiated contract */
@@ -1425,15 +1438,21 @@ void UI_Update(INA228_Reading_t *reading, float ntc_temp, uint8_t output_on)
         flash_msg = NULL;
         flash_msg_life = 2000U;       /* restore defaults for the next message */
         flash_msg_color = COL_GREEN;
-        /* wipe the message line and force a repaint of list screens */
-        LCD_Fill(0, NAVBAR_Y - 22, SCREEN_W - 1, NAVBAR_Y - 1, COL_BG);
-        s_pdo_prev_cursor = 0xFF; s_pdo_prev_scroll = 0xFF; s_pdo_prev_count = 0xFF;
-        s_set_prev_group = 0xFF;
+        /* wipe the message line and force a repaint of list screens — but not
+         * while the fault overlay owns the content area, or this would punch a
+         * COL_BG band into the red screen that the latched overlay never repairs */
+        if (!UI_FaultActive()) {
+            LCD_Fill(0, NAVBAR_Y - 22, SCREEN_W - 1, NAVBAR_Y - 1, COL_BG);
+            s_pdo_prev_cursor = 0xFF; s_pdo_prev_scroll = 0xFF; s_pdo_prev_count = 0xFF;
+            s_set_prev_group = 0xFF;
+        }
     }
 
-    /* Screen transition: instant clear, no animation */
+    /* Screen transition: instant clear, no animation. Suppressed while the
+     * fault overlay is up so its full-content COL_BG clear can't erase the
+     * red screen (the overlay is latched and would not be redrawn). */
     static UIScreen_t prev_screen = UI_SCREEN_COUNT;
-    if (current_screen != prev_screen) {
+    if (current_screen != prev_screen && !UI_FaultActive()) {
         LCD_Fill(0, STATUSBAR_H, SCREEN_W - 1, NAVBAR_Y - 1, COL_BG);
         if (current_screen == UI_SCREEN_GRAPH) {
             Graph_InvalidateGrid();  /* graph needs its grid redrawn from scratch */
@@ -1460,21 +1479,25 @@ void UI_Update(INA228_Reading_t *reading, float ntc_temp, uint8_t output_on)
     }
 
     /* ---- Fault overlay state machine ----
-     * When g_hw_fault goes 0->1, the overlay draws once and stays visible.
-     * User presses SEL to set fault_acked, which hides the overlay.
-     * The handler also clears g_hw_fault so the next fault is a fresh edge. */
-    static uint8_t fault_overlay_active = 0;
-    static uint8_t prev_hw_fault = 0;
-    /* Detect rising edge of g_hw_fault to reset ack state */
-    if (g_hw_fault && !prev_hw_fault) {
-        fault_acked = 0;
-        fault_overlay_active = 0;  /* force redraw on next frame */
-    }
-    prev_hw_fault = g_hw_fault;
+     * The overlay is shown whenever UI_FaultActive() is true (an active
+     * hardware fault whose instance the user hasn't dismissed). It is drawn
+     * once and stays static until dismissed; pressing SEL records the current
+     * g_fault_seq as acked, which hides it. Because visibility is driven by
+     * the fault sequence rather than a g_hw_fault rising edge, a fault that
+     * re-asserts within one frame (e.g. dismissed while still physically
+     * present) re-displays instead of leaving the normal screen drawn over a
+     * half-erased red overlay. */
+    static uint8_t  fault_overlay_active = 0;
+    static uint32_t fault_shown_seq = 0;   /* g_fault_seq currently on screen */
 
-    if (g_hw_fault && !fault_acked) {
-        /* Draw the fault overlay exactly once (it's static until dismissed) */
-        if (!fault_overlay_active) {
+    if (UI_FaultActive()) {
+        /* (Re)draw when the overlay isn't up, or a newer fault instance has
+         * been logged since the one on screen (the cause/text may differ). */
+        if (!fault_overlay_active || fault_shown_seq != g_fault_seq) {
+            /* Repaint the status bar too — it shows the red "FAULT! HW
+             * PROTECTION" banner, and the per-screen draw that would normally
+             * call it is skipped while the overlay is up. */
+            UI_DrawStatusBar(output_on, ntc_temp);
             uint16_t fault_bg = RGB(220, 50, 50);
             LCD_Fill(0, STATUSBAR_H, SCREEN_W - 1, NAVBAR_Y - 1, fault_bg);
             /* Must use FONT_SM/MD here — LG/XL only contain digit glyphs */
@@ -1511,6 +1534,7 @@ void UI_Update(INA228_Reading_t *reading, float ntc_temp, uint8_t output_on)
                 LCD_PutStr(FAULT_X, 108, "SELECT to Clear", FONT_MD, COL_WHITE, fault_bg);
             }
             fault_overlay_active = 1;
+            fault_shown_seq = g_fault_seq;
         }
         /* While fault overlay is active, skip all normal screen drawing */
     } else {
@@ -1580,15 +1604,16 @@ void UI_Update(INA228_Reading_t *reading, float ntc_temp, uint8_t output_on)
 void UI_HandleButton(ButtonEvent_t event)
 {
     /* Fault overlay takes absolute priority — SEL clears it, all else blocked.
-     * Clearing g_hw_fault ensures the next HW fault is a fresh 0->1 edge. */
-    if (g_hw_fault && event == BTN_SEL_PRESS) {
-        fault_acked = 1;
+     * Acking records the current fault sequence; if the cause is still present
+     * and re-asserts, FaultLog_Push bumps g_fault_seq and the overlay returns. */
+    if (UI_FaultActive() && event == BTN_SEL_PRESS) {
+        s_fault_acked_seq = g_fault_seq;
         g_hw_fault = 0;
         g_fault_source = FAULT_NONE;
         INA228_ClearAlertLatch(&g_ina);
         return;
     }
-    if (g_hw_fault && !fault_acked) return;  /* swallow all buttons during fault */
+    if (UI_FaultActive()) return;  /* swallow all buttons during fault */
 
     /* Autostart countdown — SELECT cancels this boot's auto power-on. Checked
      * high (just below fault) so it works on any screen during the window. */
