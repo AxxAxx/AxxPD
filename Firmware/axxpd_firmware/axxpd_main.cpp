@@ -146,6 +146,14 @@ static volatile bool s_pd_tick_enabled = false;
 // called, cleared once the contract lands within 15% of the target voltage.
 static volatile uint8_t s_opc_pending = 0;
 static uint32_t s_opc_target_mv = 0;
+// Snapshot of rdo_contracted when the request was armed, plus a flag set when
+// the port was already at the requested target at arm time (a redundant
+// request). OPC only completes once a contract DISTINCT from the armed-time
+// one has landed — unless the request was redundant — so a stale contract
+// that happens to sit near the new target can't report "done" before the
+// source has actually switched.
+static uint32_t s_opc_arm_rdo   = 0;
+static uint8_t  s_opc_arm_match = 0;
 
 extern "C" void axxpd_tick_pd(void) {
     // PD-only tick — safe to call from SysTick ISR, LCD DMA idle
@@ -381,6 +389,16 @@ extern "C" void axxpd_request_voltage(uint32_t mv, uint32_t ma) {
     g_fault_suppress_until = HAL_GetTick() + 1000U;
     s_opc_pending  = 1;
     s_opc_target_mv = mv;
+    /* Snapshot the contract present now so OPC can tell a fresh contract from
+     * the stale one.  "Already matched" uses a tight (~5%) window so a request
+     * for a genuinely different voltage isn't mistaken for redundant. */
+    s_opc_arm_rdo = s_port_ptr ? s_port_ptr->rdo_contracted : 0;
+    {
+        uint32_t cur_mv = static_cast<uint32_t>(axxpd_get_negotiated_v() * 1000.0f + 0.5f);
+        uint32_t tight  = mv / 20;
+        s_opc_arm_match = (axxpd_get_active_pdo_index() > 0 &&
+                           cur_mv + tight >= mv && cur_mv <= mv + tight) ? 1 : 0;
+    }
     if (s_port_ptr) s_port_ptr->pe_flags.set(pd::PE_FLAG::HAS_EXPLICIT_CONTRACT);
 
     /* Smart PDO routing: trigger_any handles Fixed + PPS but not AVS.
@@ -434,7 +452,13 @@ extern "C" void axxpd_ensure_contract_flag(void) {
 
 extern "C" uint8_t axxpd_is_opc_done(void) {
     if (!s_opc_pending) return 1;
-    // When target_mv==0 (position-based request), just check for any valid contract
+    // A "fresh" contract is one distinct from the one present when the request
+    // was armed, or a request that was already satisfied at arm time. Without
+    // this gate a stale contract reports done before the new RDO is accepted.
+    bool fresh = s_opc_arm_match ||
+                 (s_port_ptr && s_port_ptr->rdo_contracted != s_opc_arm_rdo);
+    if (!fresh) return 0;
+    // When target_mv==0 (position-based request), any fresh valid contract is enough
     if (s_opc_target_mv == 0) {
         if (axxpd_get_active_pdo_index() > 0) {
             s_opc_pending = 0;
@@ -442,14 +466,15 @@ extern "C" uint8_t axxpd_is_opc_done(void) {
         }
         return 0;
     }
-    // Check if a valid contract has been established close to the target
+    // Check the fresh contract landed close to the target. The wide (~14%)
+    // window is intentional: a requested voltage often snaps to the nearest
+    // Fixed PDO, so the negotiated voltage can differ from the request.
     if (axxpd_get_active_pdo_index() > 0) {
         float v = axxpd_get_negotiated_v();
         uint32_t actual_mv = static_cast<uint32_t>(v * 1000.0f + 0.5f);
         uint32_t target = s_opc_target_mv;
-        // Within 15% of target
         uint32_t margin = target / 7;  // ~14.3%, close enough to 15%
-        if (actual_mv >= target - margin && actual_mv <= target + margin) {
+        if (actual_mv + margin >= target && actual_mv <= target + margin) {
             s_opc_pending = 0;
             return 1;
         }
@@ -463,6 +488,10 @@ extern "C" void axxpd_request_pdo_position(uint8_t position) {
     g_fault_suppress_until = HAL_GetTick() + 2000U;
     s_opc_pending = 1;
     s_opc_target_mv = 0;
+    /* Snapshot the current contract; OPC completes when a contract distinct
+     * from this lands (or immediately if already on the requested position). */
+    s_opc_arm_rdo = s_port_ptr ? s_port_ptr->rdo_contracted : 0;
+    s_opc_arm_match = (axxpd_get_active_pdo_index() == position) ? 1 : 0;
     // Force-set HAS_EXPLICIT_CONTRACT — after failed EPR entry cycles,
     // clear_all() wipes this flag and request_new_power_level() silently
     // drops the request.  We know a contract exists because the MCU is
