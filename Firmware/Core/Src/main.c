@@ -620,19 +620,28 @@ int main(void)
           static uint32_t s_restore_first = 0;   /* first attempt tick (0=none) */
           static uint32_t s_restore_retry = 0;   /* last attempt tick           */
           uint32_t sv = Settings_GetLastVoltage();
-          uint32_t nv = (uint32_t)(axxpd_get_negotiated_v() * 1000.0f);
-          if (boot_restore_supported() && (nv + 1500U >= sv)) {
-              g_boot_restore_vi = 0;             /* reached saved voltage — done */
-          } else if (s_restore_first != 0U
-                     && (uint32_t)(now - s_restore_first) >= 15000U) {
-              g_boot_restore_vi = 0;             /* charger can't supply → lowest */
-              boot_restore_lowest();
-          } else if (s_restore_first == 0U
-                     || (uint32_t)(now - s_restore_retry) >= 2500U) {
-              if (s_restore_first == 0U) s_restore_first = now;
-              s_restore_retry = now;
-              if (sv > 20000U) axxpd_enable_epr();   /* assert EPR intent first */
-              axxpd_request_voltage(sv, Settings_GetLastCurrent());
+          /* [LOOP-BREAKER] NEVER auto-restore an EPR (>20V) voltage at boot. The
+           * EPR up-transition can collapse VBUS on a marginal/degraded charger;
+           * because the board is VBUS-powered that browns out the MCU -> reboot ->
+           * restore -> collapse again = a self-reinforcing bootloop. SPR voltages
+           * are safe to restore. EPR is (re)selected manually after boot (a
+           * one-shot, not a boot loop) and succeeds from a clean charger state. */
+          if (sv > 20000U) {
+              g_boot_restore_vi = 0;   /* leave at the safe negotiated SPR contract */
+          } else {
+              uint32_t nv = (uint32_t)(axxpd_get_negotiated_v() * 1000.0f);
+              if (boot_restore_supported() && (nv + 1500U >= sv)) {
+                  g_boot_restore_vi = 0;         /* reached saved voltage — done */
+              } else if (s_restore_first != 0U
+                         && (uint32_t)(now - s_restore_first) >= 15000U) {
+                  g_boot_restore_vi = 0;         /* charger can't supply → lowest */
+                  boot_restore_lowest();
+              } else if (s_restore_first == 0U
+                         || (uint32_t)(now - s_restore_retry) >= 2500U) {
+                  if (s_restore_first == 0U) s_restore_first = now;
+                  s_restore_retry = now;
+                  axxpd_request_voltage(sv, Settings_GetLastCurrent());  /* SPR only */
+              }
           }
       }
 

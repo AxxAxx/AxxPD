@@ -69,6 +69,7 @@ Alternatively, use any serial terminal at 115200 baud. Type `help` for a command
 - [WebSerial Dashboard](#webserial-dashboard)
 - [Python Library](#python-library)
 - [SCPI Command Reference](#scpi-command-reference)
+- [Testing](#testing)
 - [Firmware Update](#firmware-update)
 - [Building the Firmware](#building-the-firmware)
 - [Settings](#settings)
@@ -260,6 +261,18 @@ Key commands:
 
 See `Firmware/axxpd_firmware/cli.cpp` for the complete command table.
 
+# Testing
+
+Two host-side test tools live in `Tools/` (Python + pyserial). Both drive the device entirely over the USB-CDC command interface and need **no load connected**:
+
+- **`charger_test.py`** — walks every advertised PDO (SPR Fixed, PPS min/mid/max, EPR Fixed, EPR AVS min/mid/max) plus a random voltage sweep, measures VBUS at each step and checks tolerance. Validates PD negotiation across the full voltage range against any charger.
+- **`axxpd_selftest_full.py`** — a comprehensive standalone feature test (SCPI/CLI plumbing and error queue, capability discovery, the full voltage sweep with per-step measured voltages, the measurement subsystem, output enable/disable, protection configuration, EPR mode, the fault log and the telemetry stream). Writes a timestamped `.md`/`.txt` report (with a colour-coded pass/fail summary) and exits non-zero on any failure (CI-friendly).
+
+```bash
+python Tools/charger_test.py            # PD negotiation across all levels
+python Tools/axxpd_selftest_full.py     # full standalone feature test
+```
+
 # Firmware Update
 The firmware can be updated via SWD programmer or USB DFU.
 
@@ -295,7 +308,7 @@ Settings are accessed via the Settings screen (Screen 6) using the 4-button navi
 
 | Group | Setting | Description | Default |
 |-------|---------|-------------|---------|
-| Mode | Restore last V/I | Re-request the last used voltage/current at boot | OFF |
+| Mode | Restore last V/I | Re-request the last **SPR** voltage/current at boot (EPR voltages are not auto-restored — select them manually after boot) | OFF |
 | Mode | Power on boot | Auto-arm the output once the PD contract settles (5 s abort countdown) | OFF |
 | Mode | Start locked | Boot with the UI locked | OFF |
 | Mode | Boot PDO select | Show the boot PDO selector screen | ON |

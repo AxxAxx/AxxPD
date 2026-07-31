@@ -162,6 +162,8 @@ When streaming is enabled, lines prefixed with `#S` are emitted at the configure
 
 **Selftest:** Walks every advertised PDO: one step per Fixed PDO, min/mid/max for each PPS and AVS APDO, plus 5 random voltage steps. Auto-enters EPR if the source supports it. Takes roughly 20-60 seconds. `selftest` first prints a safety warning and waits for a confirmation line — type `OK` to start (anything else aborts). Do not have a load on VBUS during the test (the output voltage jumps between all PDO voltages). The output bleed resistor is engaged during the run so the reported measurements track VBUS on downward steps. Responds with PASS/FAIL per step (judged on the negotiated contract) and prints the measured voltage for each.
 
+**Host-side test tools:** for automated bench/CI validation over this command interface (no load required), the repository ships `Tools/charger_test.py` (walks every PDO and checks voltage tolerance) and `Tools/axxpd_selftest_full.py` (a comprehensive standalone feature test: SCPI plumbing, capability discovery, the full voltage sweep with per-step measured voltages, measurements, output control, protection configuration, EPR mode, the fault log and the telemetry stream). Both write a timestamped report and exit non-zero on failure. See the README "Testing" section.
+
 ---
 
 ## SCPI Commands
