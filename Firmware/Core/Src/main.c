@@ -2167,6 +2167,23 @@ void App_SetTargetVoltage(uint32_t mv, uint32_t ma)
     axxpd_request_voltage(mv, ma);
 }
 
+/* [AxxPD hardening 2026-08-01] Called by the pdsink afsm dispatch when a PD
+ * state-machine table pointer is found outside flash — i.e. memory corruption
+ * (the buffer-overflow class). Fail safe: force the output OFF and take a clean
+ * reset, so a corrupted PD FSM can never jump into garbage or mis-drive the
+ * output; the device reboots and renegotiates at 5V (EPR is never auto-restored
+ * at boot). May run from ISR/tick context — direct register writes only. */
+void afsm_dispatch_fault(void)
+{
+    __disable_irq();
+    __HAL_RCC_GPIOA_CLK_ENABLE();
+    __HAL_RCC_GPIOC_CLK_ENABLE();
+    LTC4368_SHDN_GPIO_Port->BRR  = LTC4368_SHDN_Pin;   /* SHDN low: output OFF */
+    BLEED_CTRL_GPIO_Port->BSRR   = BLEED_CTRL_Pin;     /* bleed on: discharge  */
+    NVIC_SystemReset();
+    while (1) { }
+}
+
 /* USER CODE END 4 */
 
 /**
