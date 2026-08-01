@@ -41,6 +41,53 @@ would be clamped to ~6 mA instead of the correct ~6000 mA.
 
 Both fixes are candidates for upstream PRs to the pdsink project.
 
+### `src/pd/pe.cpp` — source caps buffer overflow clamp (2026-08-01)
+
+`PE_SNK_Evaluate_Capability::on_enter_state()` copied
+`rx_emsg.size_to_pdo_count()` PDOs into `port.source_caps`
+(`etl::vector<uint32_t, MaxPdoObjects>`, capacity 11) with no bounds
+check. ETL push/pop checks are compiled out, so a malicious or buggy
+charger sending more than 11 PDOs overflowed the vector and corrupted
+adjacent `Port` members. The `validate_source_caps()` size check ran
+only *after* the overflow had already happened.
+
+Patch: clamp the loop count to `MaxPdoObjects` before copying. Marked
+`[AxxPD fix 2026-08-01]`.
+
+### `src/pd/pe.cpp` — tEnterEPR not restarted in EPR entry wait state (2026-08-01)
+
+`PE_SNK_EPR_Mode_Entry_Wait_For_Response` relies solely on
+`is_expired(tEnterEPR)` as its timeout, but the previous state
+(`PE_SNK_Send_EPR_Mode_Entry`) stops `tEnterEPR` in its `on_exit`, and a
+stopped timer never reports expired (`TimerPack` marks it *disabled*,
+and `is_expired()` returns false for disabled timers). A source that
+ACKed EPR entry (`Enter_Acknowledged`) and then went silent hung EPR
+entry forever.
+
+Patch: start `PD_TIMEOUT::tEnterEPR` in the state's `on_enter_state`;
+the `on_exit` stop is kept. Marked `[AxxPD fix 2026-08-01]`.
+
+### `src/pd/prl.cpp` — leaked tSenderResponse from RCH chunking (2026-08-01)
+
+The RCH (chunked receive) FSM aliases the PE's `tSenderResponse` timer:
+`RCH_Requesting_Chunk::on_enter` stops it and
+`RCH_Waiting_Chunk::on_enter` (re)starts it for every chunk, but nothing
+stopped it on normal completion or on a chunking error. After a
+multi-chunk message (e.g. `EPR_Source_Capabilities`) the timer was left
+running while the PE moved on to `PE_SNK_Select_Capability`, whose run
+loop checks `is_expired(tSenderResponse)` — the stale timer (33 ms)
+could then fire before the source's `Accept` arrived, causing a
+premature Hard Reset mid-EPR negotiation.
+
+Patch: stop `PD_TIMEOUT::tSenderResponse` in the RCH completion path
+(`RCH_Pass_Up_Message::on_enter_state`) and in the RCH error path
+(`RCH_Report_Error::on_enter_state`). In both paths the PE is being
+handed either the awaited response or a PRL error notification, so the
+response timer is obsolete at that point. Marked
+`[AxxPD fix 2026-08-01]`.
+
+All three fixes are candidates for upstream PRs to the pdsink project.
+
 ## Non-code additions
 
 - `pdsink/LICENSE` — MIT license text from the upstream repository, kept

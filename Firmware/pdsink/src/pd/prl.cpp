@@ -218,6 +218,16 @@ public:
     static auto on_enter_state(PRL_RCH& rch) -> state_id_t {
         rch.log_state();
 
+        // [AxxPD fix 2026-08-01] Stop the PE's tSenderResponse timer on the
+        // RCH completion path. RCH_Waiting_Chunk starts tSenderResponse for
+        // every chunk of a multi-chunk message but nothing stopped it after
+        // the last chunk, leaving it running while the PE moved on (e.g.
+        // Evaluate_Capability -> Select_Capability after chunked
+        // EPR_Source_Capabilities). The PE later saw a spurious "expired" and
+        // issued a premature Hard Reset mid-EPR. The message delivered here
+        // is the response the PE was waiting for, so the timer is obsolete.
+        rch.prl.port.timers.stop(PD_TIMEOUT::tSenderResponse);
+
         rch.prl.report_pe(MsgToPe_PrlMessageReceived{});
         return RCH_Wait_For_Message_From_Protocol_Layer;
     }
@@ -371,6 +381,13 @@ class RCH_Report_Error_State : public afsm::state<PRL_RCH, RCH_Report_Error_Stat
 public:
     static auto on_enter_state(PRL_RCH& rch) -> state_id_t {
         auto& port = rch.prl.port;
+
+        // [AxxPD fix 2026-08-01] Stop the PE's tSenderResponse timer on the
+        // RCH error path too (see RCH_Pass_Up_Message). RCH_Waiting_Chunk
+        // starts tSenderResponse per chunk; on a chunking error the PE is
+        // notified via MsgToPe_PrlReportError and handles the failure itself,
+        // so the timer must not be left running to fire spuriously later.
+        port.timers.stop(PD_TIMEOUT::tSenderResponse);
 
         if (port.prl_rch_flags.test_and_clear(RCH_FLAG::RX_ENQUEUED)) {
             port.rx_emsg = port.rx_chunk;

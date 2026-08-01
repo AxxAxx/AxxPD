@@ -234,7 +234,14 @@ public:
         pe.log_state();
 
         port.source_caps.clear();
-        for (int i = 0; i < port.rx_emsg.size_to_pdo_count(); i++) {
+        // [AxxPD fix 2026-08-01] Clamp incoming PDO count to the capacity of
+        // `source_caps` (etl::vector<uint32_t, MaxPdoObjects>). Without this,
+        // a malicious/buggy charger sending more than MaxPdoObjects (11) PDOs
+        // overflows the vector (ETL push/pop checks are disabled) and corrupts
+        // adjacent Port members.
+        int pdo_count = port.rx_emsg.size_to_pdo_count();
+        if (pdo_count > MaxPdoObjects) { pdo_count = MaxPdoObjects; }
+        for (int i = 0; i < pdo_count; i++) {
             port.source_caps.push_back(port.rx_emsg.read32(i*4));
         }
 
@@ -1108,6 +1115,13 @@ class PE_SNK_EPR_Mode_Entry_Wait_For_Response_State : public afsm::state<PE, PE_
 public:
     static state_id_t on_enter_state(PE& pe) {
         pe.log_state();
+
+        // [AxxPD fix 2026-08-01] Restart tEnterEPR here. The previous state
+        // (PE_SNK_Send_EPR_Mode_Entry) stops tEnterEPR in its on_exit, and a
+        // stopped timer never reports expired. Without restarting it, a source
+        // that ACKs EPR entry and then goes silent would hang this state
+        // forever (the is_expired(tEnterEPR) check below could never fire).
+        pe.port.timers.start(PD_TIMEOUT::tEnterEPR);
         return No_State_Change;
     }
 
