@@ -635,4 +635,9 @@ struct PD_MSG_TPL : public I_PD_MSG {
 using PD_MSG = PD_MSG_TPL<MaxExtendedMsgLen>;
 using PD_CHUNK = PD_MSG_TPL<MaxUnchunkedMsgLen>;
 
+// [AxxPD fix 2026-08-01] Lock the invariant the RX path relies on: the 3-bit
+// data_obj_count (max 7 → 28 bytes) must fit in the unchunked chunk buffer.
+static_assert(MaxUnchunkedMsgLen >= ((1u << 3) - 1u) * 4u,
+              "PD_CHUNK buffer too small for max data_obj_count");
+
 } // namespace pd

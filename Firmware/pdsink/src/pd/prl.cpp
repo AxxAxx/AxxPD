@@ -262,7 +262,11 @@ public:
         port.rch_chunk_number_expected++;
 
         if (port.rx_emsg.data_size() >= ehdr.data_size) {
-            port.rx_emsg.get_data().resize(ehdr.data_size);
+            // [AxxPD fix 2026-08-01] Local clamp so this unchecked resize can
+            // never overflow even if the distant data_size guard above changes.
+            size_t sz = ehdr.data_size;
+            if (sz > port.rx_emsg.get_data().max_size()) { sz = port.rx_emsg.get_data().max_size(); }
+            port.rx_emsg.get_data().resize(sz);
             return RCH_Pass_Up_Message;
         }
         return RCH_Requesting_Chunk;
