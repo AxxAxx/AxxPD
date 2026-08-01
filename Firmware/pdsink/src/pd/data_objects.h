@@ -617,7 +617,14 @@ struct PD_MSG_TPL : public I_PD_MSG {
     }
 
     void resize_by_data_obj_count() override {
-        _buffer.resize(header.data_obj_count * 4);
+        // [AxxPD fix 2026-08-01] Clamp to buffer capacity: etl::vector::resize
+        // is unchecked in this build, so a header.data_obj_count derived from a
+        // malformed/unexpected message could resize past the buffer and corrupt
+        // adjacent memory. A well-formed message never exceeds capacity, so a
+        // valid resize is unaffected.
+        size_t n = static_cast<size_t>(header.data_obj_count) * 4u;
+        if (n > _buffer.max_size()) { n = _buffer.max_size(); }
+        _buffer.resize(n);
     }
 
     uint16_t size_to_pdo_count() const override {

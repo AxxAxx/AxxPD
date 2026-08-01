@@ -21,7 +21,16 @@ public:
         now = time;
     }
 
+    // [AxxPD fix 2026-08-01] Bounds guard: expire_at[] is an unchecked
+    // etl::array; an out-of-range timer_id writes past it and corrupts
+    // adjacent state (a wild write that can smash an fsm dispatch pointer).
+    // A valid id (0..TIMER_COUNT-1) is unaffected; only an OOB id is rejected.
+    static constexpr bool valid_timer(int timer_id) {
+        return (unsigned)timer_id < TIMER_COUNT;
+    }
+
     void start(int timer_id, uint32_t period) {
+        if (!valid_timer(timer_id)) { return; }
         active.set(timer_id);
         disabled.clear(timer_id);
         expire_at[timer_id] = now + period;
@@ -29,6 +38,7 @@ public:
     }
 
     void stop(int timer_id) {
+        if (!valid_timer(timer_id)) { return; }
         active.clear(timer_id);
         disabled.set(timer_id);
         timers_changed.store(true);
@@ -39,9 +49,13 @@ public:
         timers_changed.store(true);
     }
 
-    bool is_disabled(int timer_id) const { return disabled.test(int(timer_id)); }
+    bool is_disabled(int timer_id) const {
+        if (!valid_timer(timer_id)) { return true; }  /* [AxxPD fix 2026-08-01] */
+        return disabled.test(int(timer_id));
+    }
 
     bool is_expired(int timer_id) {
+        if (!valid_timer(timer_id)) { return false; }  /* [AxxPD fix 2026-08-01] */
         if (active.test(timer_id)) {
             if (time_diff(expire_at[timer_id], now) <= 0) {
                 deactivate(timer_id);
