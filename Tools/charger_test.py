@@ -48,17 +48,19 @@ INTER_STEP_S       = 0.5    # pause between test steps
 # Serial helpers
 # ---------------------------------------------------------------------------
 def find_axxpd_port():
-    """Find the AxxPD USB CDC port.  Prefer STM VCP over STLink."""
+    """Find the AxxPD USB CDC port (VID:PID 0483:5740).  Prefer it over STLink.
+
+    Match on VID/PID integers, NOT the manufacturer string: on Windows the
+    inbox usbser.sys driver reports the manufacturer as "Microsoft", not
+    "STMicroelectronics", so manufacturer matching fails there.
+    """
     stlink = None
     for p in list_ports.comports():
+        if p.vid == 0x0483 and p.pid == 0x5740:
+            return p.device  # STM CDC virtual COM port = AxxPD -- preferred
         desc = (p.description or "").lower()
-        mfr = (p.manufacturer or "").lower()
-        # Prefer the CDC virtual COM port (non-STLink)
-        if "stmicroelectronics" in mfr or "stm" in mfr:
-            if "stlink" in desc or "st-link" in desc:
-                stlink = p.device
-            else:
-                return p.device  # CDC port — preferred
+        if "stlink" in desc or "st-link" in desc:
+            stlink = p.device
     return stlink  # fallback to STLink if no CDC found
 
 
@@ -157,7 +159,7 @@ PDO_RE = re.compile(
 )
 
 CONTRACT_RE = re.compile(r"#EVT CONTRACT ")
-MEAS_RE     = re.compile(r"V=([\d.]+)\s+I=([\d.]+)")
+MEAS_RE     = re.compile(r"V=([-\d.]+)\s+I=([-\d.]+)")  # current can be negative
 
 
 def parse_pdo_line(line):
@@ -435,134 +437,115 @@ def main():
         print(f"  Device: {idn}")
 
     results = []  # (label, v_meas, i_meas, passed, detail)
+    all_pdos = []
 
-    # ==================================================================
-    # PHASE 1 -- DISCOVERY
-    # ==================================================================
-    print()
-    print("  PHASE 1: DISCOVERING CHARGER CAPABILITIES")
-    print("  " + "-" * 50)
+    try:
+        # ==================================================================
+        # PHASE 1 -- DISCOVERY
+        # ==================================================================
+        print()
+        print("  PHASE 1: DISCOVERING CHARGER CAPABILITIES")
+        print("  " + "-" * 50)
 
-    # SPR PDOs
-    print("  Querying SPR PDOs ...  ", end="", flush=True)
-    spr_pdos = fetch_pdos(ser, "list", 3.0)
-    if not spr_pdos:
-        print("WARNING: no PDOs received")
-        print("  Check connection and charger. Aborting.")
-        ser.close()
-        sys.exit(1)
+        # SPR PDOs
+        print("  Querying SPR PDOs ...  ", end="", flush=True)
+        spr_pdos = fetch_pdos(ser, "list", 3.0)
+        if not spr_pdos:
+            print("WARNING: no PDOs received")
+            print("  Check connection and charger. Aborting.")
+            sys.exit(1)   # cleanup runs in the finally block below
 
-    spr_fixed = [p for p in spr_pdos if p["type"] == "FIXED"]
-    spr_pps   = [p for p in spr_pdos if p["type"] == "PPS"]
-    spr_avs   = [p for p in spr_pdos if p["type"] in ("SPR_AVS",)]
-    print(f"found {len(spr_pdos)} PDOs "
-          f"({len(spr_fixed)} Fixed, {len(spr_pps)} PPS, {len(spr_avs)} AVS)")
-    print(pdo_summary_str(spr_pdos))
+        spr_fixed = [p for p in spr_pdos if p["type"] == "FIXED"]
+        spr_pps   = [p for p in spr_pdos if p["type"] == "PPS"]
+        spr_avs   = [p for p in spr_pdos if p["type"] in ("SPR_AVS",)]
+        print(f"found {len(spr_pdos)} PDOs "
+              f"({len(spr_fixed)} Fixed, {len(spr_pps)} PPS, {len(spr_avs)} AVS)")
+        print(pdo_summary_str(spr_pdos))
 
-    # EPR PDOs
-    print()
-    print("  Entering EPR mode ...  ", end="", flush=True)
-    drain(ser)
-    send(ser, "epr")
-    time.sleep(2.0)
-    epr_pdos_raw = fetch_pdos(ser, "list all", 5.0)
-    if len(epr_pdos_raw) > len(spr_pdos):
-        epr_pdos = epr_pdos_raw
-        epr_only = [p for p in epr_pdos if p["mode"] == "EPR"]
-        epr_fixed = [p for p in epr_only if p["type"] == "FIXED"]
-        epr_avs   = [p for p in epr_only if p["type"] == "EPR_AVS"]
-        print(f"EPR active, {len(epr_pdos)} total PDOs "
-              f"(+{len(epr_only)} EPR: {len(epr_fixed)} Fixed, {len(epr_avs)} AVS)")
-        for p in epr_only:
-            if p["type"] == "FIXED":
-                print(f"    PDO{p['pos']:>2d}  Fixed  {p['v_nom']:>5.1f}V  (EPR)")
-            elif p["type"] == "EPR_AVS":
-                print(f"    PDO{p['pos']:>2d}  AVS    {p['v_min']:.1f}-{p['v_max']:.1f}V  (EPR)")
-    else:
-        epr_pdos = spr_pdos
-        print("charger does not advertise additional EPR PDOs")
-
-    # Build test plan
-    all_pdos = _merge_pdos(spr_pdos, epr_pdos)
-    plan = build_test_plan(spr_pdos, epr_pdos)
-    random_steps = build_random_steps(all_pdos, n=args.random)
-    total = len(plan) + len(random_steps)
-
-    has_pps = any(p["type"] == "PPS" for p in all_pdos)
-    has_avs = any(p["type"] in ("EPR_AVS", "SPR_AVS") for p in all_pdos)
-
-    print()
-    print(f"  Test plan: {len(plan)} systematic + {len(random_steps)} random = {total} steps")
-    if not has_pps:
-        print("  Note: charger has no PPS APDOs -- PPS tests skipped")
-    if not has_avs:
-        print("  Note: charger has no AVS APDOs -- AVS tests skipped")
-
-    # ==================================================================
-    # PHASE 2 -- SYSTEMATIC TESTING
-    # ==================================================================
-    print()
-    print("  PHASE 2: SYSTEMATIC VOLTAGE TESTING")
-    print("  " + "-" * 50)
-
-    # Reset to known state
-    send(ser, "rst")
-    time.sleep(3.0)
-    drain(ser)
-
-    # Re-enter EPR if needed
-    has_epr_steps = any("EPR" in s[0] or s[3] in ("avs",) for s in plan)
-    if has_epr_steps:
+        # EPR PDOs
+        print()
+        print("  Entering EPR mode ...  ", end="", flush=True)
+        drain(ser)
         send(ser, "epr")
-        read_lines_until(ser, re.compile(r"#EVT PD_MODE EPR"), 6.0)
         time.sleep(2.0)
+        epr_pdos_raw = fetch_pdos(ser, "list all", 5.0)
+        if len(epr_pdos_raw) > len(spr_pdos):
+            epr_pdos = epr_pdos_raw
+            epr_only = [p for p in epr_pdos if p["mode"] == "EPR"]
+            epr_fixed = [p for p in epr_only if p["type"] == "FIXED"]
+            epr_avs   = [p for p in epr_only if p["type"] == "EPR_AVS"]
+            print(f"EPR active, {len(epr_pdos)} total PDOs "
+                  f"(+{len(epr_only)} EPR: {len(epr_fixed)} Fixed, {len(epr_avs)} AVS)")
+            for p in epr_only:
+                if p["type"] == "FIXED":
+                    print(f"    PDO{p['pos']:>2d}  Fixed  {p['v_nom']:>5.1f}V  (EPR)")
+                elif p["type"] == "EPR_AVS":
+                    print(f"    PDO{p['pos']:>2d}  AVS    {p['v_min']:.1f}-{p['v_max']:.1f}V  (EPR)")
+        else:
+            epr_pdos = spr_pdos
+            print("charger does not advertise additional EPR PDOs")
 
-    # Enable output
-    send(ser, "on")
-    time.sleep(2.0)
-    drain(ser)
+        # Build test plan
+        all_pdos = _merge_pdos(spr_pdos, epr_pdos)
+        plan = build_test_plan(spr_pdos, epr_pdos)
+        random_steps = build_random_steps(all_pdos, n=args.random)
+        total = len(plan) + len(random_steps)
 
-    step_num = 0
-    section = None
-    for label, cmd, expected_v, tol_mode in plan:
-        # Section headers
-        if "Fixed" in label and "EPR" not in label and section != "spr":
-            section = "spr"
-            print()
-            print("  SPR Fixed PDOs:")
-        elif "Fixed" in label and "EPR" in label and section != "epr":
-            section = "epr"
-            print()
-            print("  EPR Fixed PDOs:")
-        elif "PPS" in label and section != "pps":
-            section = "pps"
-            print()
-            print("  PPS (min / mid / max):")
-        elif "AVS" in label and section != "avs":
-            section = "avs"
-            print()
-            print("  AVS (min / mid / max):")
-
-        step_num += 1
-        v_meas, i_meas, passed, detail = request_and_measure(
-            ser, cmd, expected_v, tol_mode)
-        print_result(step_num, total, label, v_meas, i_meas, passed, detail)
-        results.append((label, v_meas, i_meas, passed, detail))
-        time.sleep(INTER_STEP_S)
-
-    # ==================================================================
-    # PHASE 3 -- RANDOM SWEEP
-    # ==================================================================
-    if random_steps:
-        types_in_sweep = set()
-        for s in random_steps:
-            types_in_sweep.add(s[3])
-        type_desc = "/".join(t.upper() for t in sorted(types_in_sweep))
+        has_pps = any(p["type"] == "PPS" for p in all_pdos)
+        has_avs = any(p["type"] in ("EPR_AVS", "SPR_AVS") for p in all_pdos)
 
         print()
-        print(f"  PHASE 3: RANDOM SWEEP ({len(random_steps)} points across {type_desc})")
+        print(f"  Test plan: {len(plan)} systematic + {len(random_steps)} random = {total} steps")
+        if not has_pps:
+            print("  Note: charger has no PPS APDOs -- PPS tests skipped")
+        if not has_avs:
+            print("  Note: charger has no AVS APDOs -- AVS tests skipped")
+
+        # ==================================================================
+        # PHASE 2 -- SYSTEMATIC TESTING
+        # ==================================================================
+        print()
+        print("  PHASE 2: SYSTEMATIC VOLTAGE TESTING")
         print("  " + "-" * 50)
-        for label, cmd, expected_v, tol_mode in random_steps:
+
+        # Reset to known state
+        send(ser, "rst")
+        time.sleep(3.0)
+        drain(ser)
+
+        # Re-enter EPR if needed
+        has_epr_steps = any("EPR" in s[0] or s[3] in ("avs",) for s in plan)
+        if has_epr_steps:
+            send(ser, "epr")
+            read_lines_until(ser, re.compile(r"#EVT PD_MODE EPR"), 6.0)
+            time.sleep(2.0)
+
+        # Enable output
+        send(ser, "on")
+        time.sleep(2.0)
+        drain(ser)
+
+        step_num = 0
+        section = None
+        for label, cmd, expected_v, tol_mode in plan:
+            # Section headers
+            if "Fixed" in label and "EPR" not in label and section != "spr":
+                section = "spr"
+                print()
+                print("  SPR Fixed PDOs:")
+            elif "Fixed" in label and "EPR" in label and section != "epr":
+                section = "epr"
+                print()
+                print("  EPR Fixed PDOs:")
+            elif "PPS" in label and section != "pps":
+                section = "pps"
+                print()
+                print("  PPS (min / mid / max):")
+            elif "AVS" in label and section != "avs":
+                section = "avs"
+                print()
+                print("  AVS (min / mid / max):")
+
             step_num += 1
             v_meas, i_meas, passed, detail = request_and_measure(
                 ser, cmd, expected_v, tol_mode)
@@ -570,18 +553,44 @@ def main():
             results.append((label, v_meas, i_meas, passed, detail))
             time.sleep(INTER_STEP_S)
 
-    # ==================================================================
-    # PHASE 4 -- CLEANUP
-    # ==================================================================
-    print()
-    print("  Cleanup: output OFF, returning to minimum PDO ... ", end="", flush=True)
-    send(ser, "off")
-    time.sleep(0.5)
-    send(ser, "setpdo 1")
-    time.sleep(3.0)
-    drain(ser)
-    print("done")
-    ser.close()
+        # ==================================================================
+        # PHASE 3 -- RANDOM SWEEP
+        # ==================================================================
+        if random_steps:
+            types_in_sweep = set()
+            for s in random_steps:
+                types_in_sweep.add(s[3])
+            type_desc = "/".join(t.upper() for t in sorted(types_in_sweep))
+
+            print()
+            print(f"  PHASE 3: RANDOM SWEEP ({len(random_steps)} points across {type_desc})")
+            print("  " + "-" * 50)
+            for label, cmd, expected_v, tol_mode in random_steps:
+                step_num += 1
+                v_meas, i_meas, passed, detail = request_and_measure(
+                    ser, cmd, expected_v, tol_mode)
+                print_result(step_num, total, label, v_meas, i_meas, passed, detail)
+                results.append((label, v_meas, i_meas, passed, detail))
+                time.sleep(INTER_STEP_S)
+
+    finally:
+        # ==================================================================
+        # PHASE 4 -- CLEANUP (always runs: exception, Ctrl-C, or normal exit)
+        # ==================================================================
+        print()
+        print("  Cleanup: output OFF, returning to minimum PDO ... ",
+              end="", flush=True)
+        try:
+            send(ser, "off")
+            time.sleep(0.5)
+            send(ser, "setpdo 1")
+            time.sleep(3.0)
+            drain(ser)
+            print("done")
+        except Exception as e:
+            print(f"cleanup failed: {e}")
+        finally:
+            ser.close()
 
     # ---- Summary ----------------------------------------------------------
     n_pass = sum(1 for r in results if r[3])

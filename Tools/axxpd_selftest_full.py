@@ -61,13 +61,17 @@ OUTPUT_COOLDOWN_S  = 2.0    # output toggle has a 1.5 s firmware cooldown
 # Serial helpers
 # --------------------------------------------------------------------------- #
 def find_axxpd_port():
+    """Find the AxxPD USB CDC port (VID:PID 0483:5740).  Fall back to STLink.
+
+    Match on VID/PID integers, NOT manufacturer/description strings: on
+    Windows the inbox usbser.sys driver reports manufacturer "Microsoft".
+    """
     stlink = None
     for p in list_ports.comports():
-        hwid = (p.hwid or "")
         desc = (p.description or "").lower()
-        if "5740" in hwid:            # STM Virtual COM Port = AxxPD CDC
+        if p.vid == 0x0483 and p.pid == 0x5740:   # STM CDC = AxxPD -- preferred
             return p.device
-        if "3754" in hwid or "stlink" in desc or "st-link" in desc:
+        if (p.vid == 0x0483 and p.pid == 0x3754) or "stlink" in desc or "st-link" in desc:
             stlink = p.device
     return stlink
 
