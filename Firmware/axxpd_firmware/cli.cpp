@@ -518,7 +518,7 @@ static const char* HELP_TEXT =
     "             appends a hint when the source advertises EPR)\r\n"
     "  list all   full advertised set incl. EPR (auto-enters EPR if capable)\r\n"
     "  ct         show the active contract (V / A / PDO / mode)\r\n"
-    "  meas       measured V, I, W, Wh, Ah, temperatures on VBUS\r\n"
+    "  meas       measured V, I, die/NTC temps + I2C diag (:MEAS:ALL? for W/Wh/Ah)\r\n"
     "\r\n"
     "-- Mode ----------------------------------------------------------------\r\n"
     "  epr        enter EPR mode. Resets target to 5 V; use setpdo/setavs next.\r\n"

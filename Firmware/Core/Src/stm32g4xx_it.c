@@ -54,6 +54,18 @@ extern void axxpd_ucpd_irq(void);
 /* Private user code ---------------------------------------------------------*/
 /* USER CODE BEGIN 0 */
 
+/* [FIX 2026-08-01] Fault-safe shutdown: on any CPU fault, force the output
+ * OFF before anything else so a crash can never leave up to 48V/5A live on
+ * the terminals. Direct register writes only — HAL must not be trusted from
+ * a fault context. BSRR/BRR writes are atomic and always safe.
+ * SHDN (PA1) LOW  = LTC4368 output disabled.
+ * BLEED_CTRL (PC6) HIGH = discharge the output capacitance. */
+static inline void fault_kill_output(void)
+{
+  LTC4368_SHDN_GPIO_Port->BRR  = LTC4368_SHDN_Pin;   /* SHDN low: output OFF */
+  BLEED_CTRL_GPIO_Port->BSRR   = BLEED_CTRL_Pin;     /* bleed on: discharge  */
+}
+
 /* USER CODE END 0 */
 
 /* External variables --------------------------------------------------------*/
@@ -71,7 +83,18 @@ extern PCD_HandleTypeDef hpcd_USB_FS;
 void NMI_Handler(void)
 {
   /* USER CODE BEGIN NonMaskableInt_IRQn 0 */
+  /* [FIX 2026-08-01] Output off first — never leave the terminals live. */
+  fault_kill_output();
 
+  /* [FIX 2026-08-01] Flash double-bit ECC error raises NMI. Clear the ECC
+   * flags (rc_w1) so the NMI does not immediately re-fire, then take a clean
+   * reset instead of hanging until the IWDG bites and the fault loops. */
+  if (FLASH->ECCR & (FLASH_ECCR_ECCD | FLASH_ECCR_ECCC))
+  {
+    FLASH->ECCR = FLASH_ECCR_ECCD | FLASH_ECCR_ECCC;
+  }
+
+  NVIC_SystemReset();
   /* USER CODE END NonMaskableInt_IRQn 0 */
   /* USER CODE BEGIN NonMaskableInt_IRQn 1 */
    while (1)
@@ -86,7 +109,9 @@ void NMI_Handler(void)
 void HardFault_Handler(void)
 {
   /* USER CODE BEGIN HardFault_IRQn 0 */
-
+  /* [FIX 2026-08-01] Output off first, then clean reset (IWDG took ~5s). */
+  fault_kill_output();
+  NVIC_SystemReset();
   /* USER CODE END HardFault_IRQn 0 */
   while (1)
   {
@@ -101,7 +126,9 @@ void HardFault_Handler(void)
 void MemManage_Handler(void)
 {
   /* USER CODE BEGIN MemoryManagement_IRQn 0 */
-
+  /* [FIX 2026-08-01] Output off first, then clean reset. */
+  fault_kill_output();
+  NVIC_SystemReset();
   /* USER CODE END MemoryManagement_IRQn 0 */
   while (1)
   {
@@ -116,7 +143,9 @@ void MemManage_Handler(void)
 void BusFault_Handler(void)
 {
   /* USER CODE BEGIN BusFault_IRQn 0 */
-
+  /* [FIX 2026-08-01] Output off first, then clean reset. */
+  fault_kill_output();
+  NVIC_SystemReset();
   /* USER CODE END BusFault_IRQn 0 */
   while (1)
   {
@@ -131,7 +160,9 @@ void BusFault_Handler(void)
 void UsageFault_Handler(void)
 {
   /* USER CODE BEGIN UsageFault_IRQn 0 */
-
+  /* [FIX 2026-08-01] Output off first, then clean reset. */
+  fault_kill_output();
+  NVIC_SystemReset();
   /* USER CODE END UsageFault_IRQn 0 */
   while (1)
   {

@@ -199,9 +199,54 @@ static uint32_t last_graph_sample_ms = 0;
  * We detect repeated read failures, mark the reading untrusted, and recover
  * the bus (bit-bang SCL to free a stuck slave + peripheral reset). */
 #define INA_FAIL_RECOVER_N        3U      /* consecutive read failures before recovery */
-static uint8_t           g_ina_valid = 0;          /* last reading fresh & trusted */
+/* [FIX 2026-08-01] volatile: g_ina_valid is now also read from ISR context
+ * (ocp_handle_trip dead-short check). Single-byte reads are atomic. */
+static volatile uint8_t  g_ina_valid = 0;          /* last reading fresh & trusted */
 static uint16_t          g_ina_fail  = 0;          /* consecutive read failures     */
 static volatile uint32_t g_ina_recover_count = 0;  /* total bus recoveries (diag)   */
+
+/* [FIX 2026-08-01] Dead-sensor latch: if the INA228 keeps failing even after
+ * repeated bus recoveries WHILE the output is enabled, every software
+ * protection layer (OPP/Ah/Wh/charge-complete + the INA ALERT OCP) is
+ * silently blind. After INA_FAIL_LATCH_N consecutive recovery cycles without
+ * a single good read in between, latch a sensor fault and disable the output
+ * instead of running measurement-blind. One successful read resets the count.
+ * The existing bus-recovery attempts are preserved — this only adds a limit. */
+#define INA_FAIL_LATCH_N          5U
+static uint8_t g_ina_recover_fail_cycles = 0;  /* recoveries with no good read between */
+
+/* [FIX 2026-08-01] Fault code for a dead INA228 sensor. Continues the FAULT_*
+ * list in main.h (12 = next free value); defined locally because this fix pass
+ * only touches main.c. Safe for the decoders: both ui.c and cli.cpp use
+ * if/else chains that fall through to "Unknown" for codes they don't know. */
+#ifndef FAULT_INA_SENSOR
+#define FAULT_INA_SENSOR          12
+#endif
+
+/* [FIX 2026-08-01] Contract-relative software OVP sustain time. The overshoot
+ * must persist continuously this long before latching, so a cap-discharge
+ * transient on a voltage step-down (bleed-assisted, resolves well under this)
+ * can never trip it. Long enough to never fire on a legitimate PD/EPR
+ * transition; short enough to catch a real sustained charger overshoot. */
+#define OVP_SW_SUSTAIN_MS         1000U
+
+/* [FIX 2026-08-01] Reset-cause capture + abnormal-reboot autostart safety.
+ * g_reset_cause holds the RCC->CSR reset flags (RCC_CSR_xxxRSTF bits) captured
+ * at the very top of main() before they are cleared via RMVF. Non-static so
+ * cli.cpp can `extern uint32_t g_reset_cause;` for a diagnostics query. */
+uint32_t g_reset_cause = 0U;
+#define RESET_CAUSE_ABNORMAL  (RCC_CSR_BORRSTF | RCC_CSR_IWDGRSTF)
+/* "Output was enabled" breadcrumb that must survive a system reset: TAMP
+ * backup register BKP4R. Backup-domain registers are untouched by the startup
+ * code and by every system reset source (IWDG/BOR/SFT/PIN); they only clear
+ * when VDD fully drains — in which case the suppression simply doesn't
+ * trigger, which is the safe direction. BKP4R rather than BKP0R to stay clear
+ * of any (current or future) bootloader use of the low registers. Requires
+ * backup-domain write access (DBP), enabled once at boot and left on.
+ * Set in Output_Enable(), cleared in Output_Disable()/Output_Disable_ISR(). */
+#define BKP_OUTPUT_ON_REG     (TAMP->BKP4R)
+#define BKP_OUTPUT_ON_MAGIC   0xB002C0DEu
+static uint8_t g_autostart_suppressed = 0;  /* 1 = power_on_boot skipped this boot */
 
 /* USER CODE END PV */
 
@@ -367,6 +412,32 @@ int main(void)
 {
 
   /* USER CODE BEGIN 1 */
+
+  /* [FIX 2026-08-01] Reset-cause capture — must run before anything can
+   * clear the flags. Decode-and-clear: g_reset_cause keeps the raw
+   * RCC_CSR_xxxRSTF bits (BOR/IWDG/SFT/PIN/WWDG/LPWR/OBL) for later CLI
+   * diagnostics; RMVF clears them so the next boot sees only its own cause. */
+  g_reset_cause = RCC->CSR & (RCC_CSR_LPWRRSTF | RCC_CSR_WWDGRSTF |
+                              RCC_CSR_IWDGRSTF | RCC_CSR_SFTRSTF  |
+                              RCC_CSR_BORRSTF  | RCC_CSR_PINRSTF  |
+                              RCC_CSR_OBLRSTF);
+  SET_BIT(RCC->CSR, RCC_CSR_RMVF);
+
+  /* [FIX 2026-08-01] Backup-domain access for the output-on breadcrumb
+   * (BKP_OUTPUT_ON_REG). Enabled once here and intentionally left on so
+   * Output_Enable/Disable can write the register at runtime. If the last
+   * reset was abnormal (brownout / watchdog) AND the output was enabled when
+   * it happened, suppress the power_on_boot autostart exactly once this boot
+   * so a persistent output short can't loop reboot→autostart→short→reboot. */
+  __HAL_RCC_PWR_CLK_ENABLE();
+  __HAL_RCC_RTCAPB_CLK_ENABLE();
+  HAL_PWR_EnableBkUpAccess();
+  if ((g_reset_cause & RESET_CAUSE_ABNORMAL) != 0U &&
+      BKP_OUTPUT_ON_REG == BKP_OUTPUT_ON_MAGIC) {
+      g_autostart_suppressed = 1;
+  }
+  BKP_OUTPUT_ON_REG = 0U;   /* consume the breadcrumb (one-shot) */
+
   /* USER CODE END 1 */
 
   HAL_Init();
@@ -501,6 +572,14 @@ int main(void)
   /* Latch the "Power on at boot" one-shot.  The main loop arms the output
    * once the PD contract (incl. EPR) has settled — see g_boot_power_on below. */
   g_boot_power_on = Settings_GetPowerOnBoot();
+
+  /* [FIX 2026-08-01] Abnormal-reboot safety: the previous reset was a
+   * brownout or watchdog reset while the output was enabled (see the
+   * breadcrumb check at the top of main()). Skip the autostart exactly once —
+   * the setting itself is untouched, and manual enable still works normally. */
+  if (g_autostart_suppressed && g_boot_power_on) {
+      g_boot_power_on = 0;
+  }
 
   UI_Init();
 
@@ -664,6 +743,7 @@ int main(void)
           if (INA228_ReadAll(&g_ina, &g_ina_reading) == HAL_OK) {
               g_ina_valid = 1;
               g_ina_fail  = 0;
+              g_ina_recover_fail_cycles = 0;  /* [FIX 2026-08-01] sensor alive again */
               /* Session peak tracking for the Energy screen */
               if (g_ina_reading.current_a > g_peak_current_a)
                   g_peak_current_a = g_ina_reading.current_a;
@@ -686,6 +766,22 @@ int main(void)
                                         (unsigned long)g_ina_recover_count);
                       if (en > 0) CDC_Transmit_Blocking((const uint8_t *)ebuf, (uint16_t)en, 50);
                   }
+                  /* [FIX 2026-08-01] Dead-sensor latch: the recovery above is
+                   * still attempted every INA_FAIL_RECOVER_N failures, but if
+                   * INA_FAIL_LATCH_N recovery cycles pass without a single
+                   * good read while the output is ON, the sensor (and every
+                   * measurement-based protection) is effectively dead — latch
+                   * a sensor fault and disable the output rather than keep
+                   * running blind. Cleared by the good-read path above. */
+                  if (g_ina_recover_fail_cycles < 0xFFU) g_ina_recover_fail_cycles++;
+                  if (g_output_enabled && !g_hw_fault &&
+                      g_ina_recover_fail_cycles >= INA_FAIL_LATCH_N) {
+                      g_hw_fault = 1;
+                      g_fault_source = FAULT_INA_SENSOR;
+                      Output_Disable();
+                      g_fault_pending_beep = 1;
+                      FaultLog_Push(FAULT_INA_SENSOR, 0, 0);
+                  }
               }
           }
 
@@ -703,6 +799,37 @@ int main(void)
                       FaultLog_Push(FAULT_OPP,
                                     (uint16_t)(g_ina_reading.voltage_v * 1000.0f),
                                     (uint16_t)(g_ina_reading.current_a * 1000.0f));
+                  }
+              }
+              /* [FIX 2026-08-01] Contract-relative software OVP. The hardware
+               * COMP1 backup OVP is fixed (~55V) and only catches a gross
+               * runaway; a charger that overshoots its *negotiated* contract
+               * (e.g. 40V on a 20V contract, still <55V) would go uncaught.
+               * Trip when measured VBUS sustains above contract + a generous
+               * margin. SAFETY (must not break PD/EPR negotiation): software
+               * only — never touches the COMP1/DAC threshold; already gated by
+               * the fault-suppression window above; 20%+2V margin covers
+               * PPS/EPR/fixed tolerance; and requires the overshoot to persist
+               * OVP_SW_SUSTAIN_MS continuously, so a step-down cap-discharge
+               * transient cannot trip it. */
+              {
+                  static uint32_t swovp_since = 0U;
+                  float nv = axxpd_get_negotiated_v();  /* contract V, 0 if none */
+                  if (nv > 1.0f &&
+                      g_ina_reading.voltage_v > (nv * 1.20f + 2.0f)) {
+                      if (swovp_since == 0U) swovp_since = now ? now : 1U;
+                      else if ((now - swovp_since) >= OVP_SW_SUSTAIN_MS) {
+                          swovp_since = 0U;
+                          g_hw_fault = 1;
+                          g_fault_source = FAULT_COMP_OVP;
+                          Output_Disable();
+                          g_fault_pending_beep = 1;
+                          FaultLog_Push(FAULT_COMP_OVP,
+                                        (uint16_t)(g_ina_reading.voltage_v * 1000.0f),
+                                        (uint16_t)(g_ina_reading.current_a * 1000.0f));
+                      }
+                  } else {
+                      swovp_since = 0U;
                   }
               }
               /* Ah limit: accumulated charge exceeds target */
@@ -1777,6 +1904,12 @@ void Output_Enable(void) {
     HAL_GPIO_Init(LTC4368_SHDN_GPIO_Port, &gpio);
     HAL_GPIO_WritePin(LTC4368_SHDN_GPIO_Port, LTC4368_SHDN_Pin, GPIO_PIN_SET);
     g_output_enabled = 1;
+    /* [FIX 2026-08-01] Reset-surviving breadcrumb: output is now live. If an
+     * abnormal reset (BOR/IWDG) hits before Output_Disable clears this, the
+     * next boot suppresses the power_on_boot autostart once. Deliberately NOT
+     * cleared by the OCP-retry SHDN cut (which bypasses Output_Disable) — the
+     * output is still logically "on" during a retry cycle. */
+    BKP_OUTPUT_ON_REG = BKP_OUTPUT_ON_MAGIC;
     g_output_enable_tick = HAL_GetTick();
     if (Settings_GetTimerSeconds() > 0) Timer_Start();
 }
@@ -1808,6 +1941,7 @@ void Output_Disable_ISR(void) {
     /* Enable bleed resistor to discharge output caps */
     HAL_GPIO_WritePin(BLEED_CTRL_GPIO_Port, BLEED_CTRL_Pin, GPIO_PIN_SET);
     g_output_enabled = 0;
+    BKP_OUTPUT_ON_REG = 0U;  /* [FIX 2026-08-01] clear output-on breadcrumb */
     Timer_Stop();
     g_save_on_disable = 1;
 }
@@ -1827,6 +1961,7 @@ void Output_Disable(void) {
     /* Enable bleed resistor to discharge output caps */
     HAL_GPIO_WritePin(BLEED_CTRL_GPIO_Port, BLEED_CTRL_Pin, GPIO_PIN_SET);
     g_output_enabled = 0;
+    BKP_OUTPUT_ON_REG = 0U;  /* [FIX 2026-08-01] clear output-on breadcrumb */
     Timer_Stop();
     /* Save last voltage/current for remember-boot feature */
     {
@@ -1882,6 +2017,19 @@ static void ocp_handle_trip(uint8_t fault_source) {
      * OCP_RETRY_RESET_MS for why this must exceed the retry+suppression cycle. */
     if (ocp_retry_count > 0 && (now - ocp_retry_tick) > OCP_RETRY_RESET_MS) {
         ocp_retry_count = 0;
+    }
+
+    /* [FIX 2026-08-01] Dead-short latch: this trip is a RE-trip after a
+     * soft-start retry (counter still running, i.e. the reset window above
+     * did not clear it) AND a fresh, trusted INA228 reading shows the output
+     * sitting near 0 V — that is a hard short, not charging inrush. Retrying
+     * into it hammers the pass FETs and (at ≥15 V contracts) can provoke a
+     * charger hard reset, so latch the fault immediately instead of consuming
+     * the remaining retries. Trips with a non-collapsed output voltage (or
+     * with no valid reading) keep the normal soft-start retry behaviour. */
+    if (ocp_retry_count > 0 && g_ina_valid &&
+        g_ina_reading.voltage_v < 1.0f) {
+        allowed = 0;   /* force the latch branch below */
     }
 
     if (ocp_retry_count < allowed) {
@@ -2029,6 +2177,17 @@ void Error_Handler(void)
 {
   /* USER CODE BEGIN Error_Handler_Debug */
   __disable_irq();
+  /* [FIX 2026-08-01] Fail-safe: a fatal error must never leave the output
+   * live while we wait for the watchdog reset. Direct register writes only
+   * (no HAL, no SysTick dependency): SHDN (PA1) low = LTC4368 off, BLEED
+   * (PC6) high = discharge output caps. GPIO clocks are enabled first in
+   * case we got here before MX_GPIO_Init(); if the pins are not yet
+   * configured as outputs this is a harmless no-op (SHDN has an external
+   * pull-down, so the output defaults to off anyway). */
+  __HAL_RCC_GPIOA_CLK_ENABLE();
+  __HAL_RCC_GPIOC_CLK_ENABLE();
+  LTC4368_SHDN_GPIO_Port->BRR = LTC4368_SHDN_Pin;   /* SHDN low   = output off */
+  BLEED_CTRL_GPIO_Port->BSRR  = BLEED_CTRL_Pin;     /* BLEED high = bleed on   */
   /* Start IWDG if not already running, so device resets instead of hanging */
   IWDG->KR  = 0x5555U;
   IWDG->PR  = 4U;
