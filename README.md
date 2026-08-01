@@ -67,7 +67,6 @@ Alternatively, use any serial terminal at 115200 baud. Type `help` for a command
 - [Boot Sequence](#boot-sequence)
 - [User Interface](#user-interface)
 - [WebSerial Dashboard](#webserial-dashboard)
-- [Python Library](#python-library)
 - [SCPI Command Reference](#scpi-command-reference)
 - [Testing](#testing)
 - [Firmware Update](#firmware-update)
@@ -85,8 +84,7 @@ Alternatively, use any serial terminal at 115200 baud. Type `help` for a command
 - 1.47" 320x172 IPS TFT color display (ST7789V, SPI) with 4-button navigation and 6 UI screens: Dashboard, PDOs, Graph, Presets, Energy and Settings.
 - USB CDC serial interface for SCPI commands and data logging at 20 Hz.
 - Browser-based WebSerial dashboard with live readout, chart, and CSV recording (zero install).
-- Python scripting library (`pip install axxpd`) for automated test rigs and CI integration.
-- USB DFU firmware updates via the `dfu` CLI command.
+- USB DFU firmware updates via the STM32 ROM bootloader (button-hold at power-on, or the `dfu` CLI command).
 - Programmable voltage presets stored in flash (up to 5 slots).
 - Programmable voltage sequencing with configurable step times.
 - Energy tracking with INA228 hardware Wh/Ah accumulators.
@@ -142,7 +140,7 @@ Additional firmware protection features:
 - **Output toggle cooldown** -- 1.5 s minimum between enable events to prevent MOSFET thermal stress.
 - **Fault buzzer override** -- critical fault tones always play even if buzzer is disabled in settings.
 - **Post-suppression fault poll** -- after the inrush suppression window expires, firmware polls LTC4368_FLT, INA228_ALERT, and COMP1 OVP to catch edge-triggered faults missed during suppression.
-- **OCP bounds** -- CLI `protect ocp` enforces 0.1 A minimum and 7 A maximum.
+- **OCP bounds** -- CLI `protect ocp` enforces 0.1 A minimum and 6 A maximum.
 
 # Power Flow
 ```
@@ -212,27 +210,6 @@ A browser-based dashboard is included at [`Tools/AxxPD_Dashboard.html`](./Tools/
 - CSV recording -- click Record, run your test, click Stop, then Download CSV (20 Hz telemetry with timestamps)
 - Interactive SCPI terminal with command history
 
-## Python Library
-A Python library is available for scripted control and automation:
-```
-pip install axxpd
-```
-```python
-from axxpd import AxxPD
-
-with AxxPD() as pd:              # auto-detects the AxxPD serial port
-    pd.set_voltage(12.0)
-    pd.output_on()
-    m = pd.measure()
-    print(f"{m['voltage']:.3f} V, {m['current']:.3f} A")
-
-    for sample in pd.stream(duration=10):
-        print(sample)            # 20 Hz telemetry dicts
-
-    pd.output_off()
-```
-The library wraps every SCPI command as a Python method and supports streaming telemetry via generator or callback. Source: [`Tools/axxpd/`](./Tools/axxpd/)
-
 # SCPI Command Reference
 AxxPD has a comprehensive command interface over USB CDC serial (115200 baud) supporting both interactive shortcut commands and full SCPI. See the **[complete command reference](./Documentation/AxxPD_Command_Reference.md)** for all commands, SCPI subsystems, scripting examples and the data stream format.
 
@@ -247,7 +224,7 @@ Key commands:
 | `setavs <V>` | Set AVS voltage (EPR) |
 | `on` / `off` | Enable / disable output |
 | `epr` / `spr` | Enter / leave EPR mode |
-| `meas` | Read voltage, current, power, temperature |
+| `meas` | Read voltage, current, temperatures + I2C diagnostics |
 | `stream on [hz]` / `stream off` | CSV telemetry (default 20 Hz, up to 1 kHz) |
 | `selftest` | Walk all PDOs and report pass/fail |
 | `protect ocp <A>` | Set OCP threshold |
@@ -274,20 +251,22 @@ python Tools/axxpd_selftest_full.py     # full standalone feature test
 ```
 
 # Firmware Update
-The firmware can be updated via SWD programmer or USB DFU.
+There is no custom bootloader -- the application runs directly from flash at `0x08000000`. Updates use the STM32's built-in ROM DFU bootloader over USB, or an SWD programmer.
+
+## USB DFU
+1. Enter the STM32 ROM DFU bootloader either by:
+   - **Button-hold:** hold the boot button while plugging in power, or
+   - **Serial command:** send `dfu` over USB serial (aliases: `fwupd`, `bootloader`, SCPI `:SYST:DFU`)
+2. The device enumerates as an STM32 DFU device. Use [STM32CubeProgrammer](https://www.st.com/en/development-tools/stm32cubeprog.html) (USB connection) or `dfu-util` to flash the `.bin` file at `0x08000000`
+3. Power cycle or reset after flashing to return to the AxxPD firmware
 
 ## SWD Programmer
 1. Download the latest `AxxPD.bin` from [Releases](https://github.com/AxxAxx/AxxPD/releases)
 2. Connect an ST-Link programmer to the SWD pads (GND, 3.3V, SWCLK, SWDIO)
-3. Flash using [STM32CubeProgrammer](https://www.st.com/en/development-tools/stm32cubeprog.html) or the command line:
+3. Flash using STM32CubeProgrammer or the command line:
 ```
 STM32_Programmer_CLI -c port=SWD freq=4000 -w AxxPD.bin 0x08000000 -v -rst
 ```
-
-## USB DFU
-1. Enter DFU mode by sending the `dfu` command over USB serial
-2. Use STM32CubeProgrammer, select USB connection, and flash the `.bin` file
-3. Power cycle after flashing
 
 # Building the Firmware
 The firmware targets the STM32G491CCU6 and is built with STM32CubeIDE or arm-none-eabi-gcc.
@@ -348,8 +327,7 @@ AxxPD/
     etl/                 Embedded Template Library (MIT)
     Middlewares/         STM32 USB Device Library
     USB_Device/          USB CDC application layer
-  Tools/                 WebSerial dashboard, Python library, test scripts
-    axxpd/               Python SCPI library (pip install axxpd)
+  Tools/                 WebSerial dashboard, host-side test scripts
   Documentation/         Schematic, command reference, product photos
 ```
 
