@@ -14,6 +14,13 @@ Firmware/build/
 *.launch
 *.ioc.bak
 
+# Python
+__pycache__/
+*.pyc
+
+# Test artifacts
+charger_report_*.txt
+
 # OS
 Thumbs.db
 .DS_Store
