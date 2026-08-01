@@ -45,7 +45,11 @@ _Min_Stack_Size = 0x400; /* required amount of stack */
 MEMORY
 {
   RAM    (xrw)    : ORIGIN = 0x20000000,   LENGTH = 112K
-  FLASH    (rx)    : ORIGIN = 0x8000000,   LENGTH = 256K
+  /* [FIX 2026-08-01] LENGTH reduced 256K -> 254K (0x3F800): the last 2KB flash
+     page at 0x0803F800 (bank 1, page 127) is reserved for settings storage
+     (see SETTINGS_FLASH_ADDR in Core/Src/settings.c). This prevents the linker
+     from placing code/rodata into the settings page. */
+  FLASH    (rx)    : ORIGIN = 0x8000000,   LENGTH = 254K
 }
 
 /* Sections */

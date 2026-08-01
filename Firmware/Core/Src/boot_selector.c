@@ -402,6 +402,15 @@ int BootSelector_Run(void)
     uint32_t splash_start = HAL_GetTick();
     #define SPLASH_MIN_MS 500U
 
+    /* [FIX 2026-08-01] Bounded wait for source capabilities. Previously
+     * STATE_WAIT_FOR_CAPS polled forever: if no PD source ever presents caps
+     * (e.g. unit powered via the data port / external 3.3V with no charger on
+     * the PD input), boot hung on the splash screen indefinitely. After this
+     * timeout we return 0 ("no selection") so main.c proceeds with normal
+     * boot. Reset on re-entry to WAIT_FOR_CAPS after a source disconnect. */
+    #define CAPS_WAIT_TIMEOUT_MS 15000U
+    uint32_t caps_wait_start = HAL_GetTick();  /* [FIX 2026-08-01] */
+
     /* Test beep so we know buzzer works */
     Buzzer_Confirm();
     footer_mode = 0xFFU;  /* reset so footer draws fresh on first use */
@@ -437,6 +446,13 @@ int BootSelector_Run(void)
          * STATE: WAIT_FOR_CAPS — splash logo visible, polling for PDOs
          * ---------------------------------------------------------------- */
         if (state == STATE_WAIT_FOR_CAPS) {
+            /* [FIX 2026-08-01] Bounded timeout: no source caps arrived within
+             * CAPS_WAIT_TIMEOUT_MS — give up and let boot proceed normally
+             * (return 0 = "no selection", same as feature disabled). */
+            if ((now - caps_wait_start) >= CAPS_WAIT_TIMEOUT_MS) {
+                return 0;
+            }
+
             /* Animate "Connecting..." dots: cycle 1->2->3->1 every 250 ms */
             if ((now - dot_tick) >= 250U) {
                 dot_tick   = now;
@@ -509,6 +525,7 @@ int BootSelector_Run(void)
                 scroll    = 0U;
                 dot_phase = 0U;
                 dot_tick  = now;
+                caps_wait_start = now;  /* [FIX 2026-08-01] restart bounded caps wait */
                 draw_clear();
                 state = STATE_WAIT_FOR_CAPS;
                 continue;
