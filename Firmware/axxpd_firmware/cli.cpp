@@ -201,6 +201,18 @@ void cli_set_epr_intent(bool enable) { user_wants_epr = enable; }
 // EPR failure tracking — counts rapid EPR-enter/lose cycles for ErrorRecovery.
 static uint32_t epr_quick_fail_count = 0;
 
+// [FIX 2026-08-02] Fast EPR-entry auto-retry. With some charger/cable combos the
+// FIRST EPR_Mode(Enter) after boot is silently ignored (the source renegotiates
+// back to 5 V SPR instead of entering EPR) and the request flag is consumed —
+// the 2nd attempt then reliably succeeds. do_pd_mode()/setpdo fire the request
+// once, so without this the user must type 'epr' twice. Re-issue the request
+// every EPR_FAST_RETRY_MS while the user wants EPR but we are not yet in it,
+// up to EPR_FAST_RETRY_MAX times, before the slower cable_emu/ErrorRecovery
+// escalation (Pattern B) takes over. Safe: only re-issued when NOT in EPR (so it
+// cannot cause enter/lose cycling), and setting an already-set flag is a no-op.
+static uint32_t epr_fast_retry_ms    = 0;   // tick of the last (re)issue
+static uint8_t  epr_fast_retry_count = 0;   // fast retries used this request
+
 // NOTE: An older "deferred setpdo" mechanism lived here — it armed an EPR
 // slot request and waited for IN_EPR_MODE to settle before firing. It was
 // removed when setpdo moved to calling trigger_by_position() directly
@@ -1575,6 +1587,10 @@ static void seq_tick() {
 // so the background tracker starts fresh).
 static void reset_epr_fail_tracker() {
     epr_quick_fail_count = 0;
+    // Arm the fast-retry window: first re-issue fires EPR_FAST_RETRY_MS after
+    // this initial request. Counted from "now" so the initial attempt is free.
+    epr_fast_retry_ms    = HAL_GetTick();
+    epr_fast_retry_count = 0;
 }
 
 // :PD:MODE SPR|EPR | :PD:MODE?
@@ -3261,6 +3277,27 @@ void cli_poll() {
             }
 
             epr_tracker_prev = in_epr;
+
+            // Fast auto-retry: the first EPR_Mode(Enter) is often ignored by the
+            // source (falls back to 5 V SPR, request consumed). Re-issue quickly
+            // a few times — the retry almost always enters on the 2nd attempt.
+            // Runs before the slow Pattern B cable_emu/ErrorRecovery escalation.
+            static constexpr uint32_t EPR_FAST_RETRY_MS  = 2000;
+            static constexpr uint8_t  EPR_FAST_RETRY_MAX = 4;
+            if (in_epr) {
+                epr_fast_retry_count = 0;           // entered — stop retrying
+            } else if (epr_fast_retry_count < EPR_FAST_RETRY_MAX &&
+                       (int32_t)(HAL_GetTick() - epr_fast_retry_ms) >=
+                       (int32_t)EPR_FAST_RETRY_MS) {
+                epr_fast_retry_ms = HAL_GetTick();
+                epr_fast_retry_count++;
+                // Re-prime a safe 5 V target (as do_pd_mode does) and re-issue.
+                s_dpm->trigger_any(5000, 0);
+                s_port->pe_flags.clear(pd::PE_FLAG::EPR_AUTO_ENTER_DISABLED);
+                s_port->dpm_requests.set(pd::DPM_REQUEST_FLAG::EPR_MODE_ENTRY);
+                if (state_trace || axxpd_low_trace)
+                    out("#DBG EPR fast-retry\r\n");
+            }
 
             // Pattern B: user_wants_epr is true but EPR never enters.
             // This catches sources that ignore EPR_Mode(Enter) because cable
