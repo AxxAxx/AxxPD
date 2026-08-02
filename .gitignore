@@ -25,3 +25,7 @@ charger_report_*.txt
 Thumbs.db
 .DS_Store
 desktop.ini
+
+# Self-test reports
+Tools/axxpd_selftest_*.md
+Tools/axxpd_selftest_*.txt
