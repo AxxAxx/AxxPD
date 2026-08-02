@@ -110,8 +110,13 @@ ASM_SOURCES = Core/Startup/startup_stm32g491ccux.s
 LDSCRIPT = STM32G491CCUX_FLASH.ld
 
 # Compiler flags
-CFLAGS = $(CPU) $(C_DEFS) $(C_INCLUDES) -Iaxxpd_firmware -Wall -fdata-sections -ffunction-sections -Os -g
-CXXFLAGS = $(CPU) $(C_DEFS) $(C_INCLUDES) $(CXX_INCLUDES) -Wall -fdata-sections -ffunction-sections -fno-exceptions -fno-rtti -std=c++17 -Os -g
+# -MMD -MP: emit .d header-dependency files so a changed header rebuilds every
+# source that includes it. WITHOUT this, editing a header (e.g. afsm.h) left
+# stale .o files and produced inconsistent binaries that crashed — always
+# `make clean` was the only safe rebuild. Header deps fix that at the source.
+DEPFLAGS = -MMD -MP
+CFLAGS = $(CPU) $(C_DEFS) $(C_INCLUDES) -Iaxxpd_firmware -Wall -fdata-sections -ffunction-sections -Os -g $(DEPFLAGS)
+CXXFLAGS = $(CPU) $(C_DEFS) $(C_INCLUDES) $(CXX_INCLUDES) -Wall -fdata-sections -ffunction-sections -fno-exceptions -fno-rtti -std=c++17 -Os -g $(DEPFLAGS)
 ASFLAGS = $(CPU) -g3
 
 # Linker flags
@@ -145,5 +150,8 @@ $(BUILD_DIR)/%.o: %.s
 
 clean:
 	rm -rf $(BUILD_DIR)
+
+# Pull in auto-generated header dependencies so header edits trigger rebuilds.
+-include $(OBJS:.o=.d)
 
 .PHONY: all clean
