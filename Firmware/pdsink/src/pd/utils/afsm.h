@@ -205,24 +205,6 @@ public:
     }
 };
 
-// [AxxPD hardening 2026-08-01] Guard the state-machine dispatch against a
-// corrupted table pointer. An fsm object begins with the enter/run/exit/
-// interceptor table pointers; a wild write (the documented PD buffer-overflow
-// class) can smash them, and dispatching through a garbage table jumps into
-// random memory — or, worse, into valid-but-wrong code that could mis-drive
-// the output. All firmware code and the rodata dispatch tables live in internal
-// flash [0x08000000, 0x08040000); a valid dispatch table pointer is ALWAYS in
-// that range, so this check never rejects a legitimate call. On a bad pointer
-// the app-provided hook fails safe (output off + clean reset) instead of
-// jumping into garbage; the device reboots and renegotiates at 5 V.
-extern "C" void afsm_dispatch_fault(void);
-static inline bool afsm_tables_ok(const void* a, const void* b) {
-    size_t x = reinterpret_cast<size_t>(a);
-    size_t y = reinterpret_cast<size_t>(b);
-    return (x >= 0x08000000u && x < 0x08040000u) &&
-           (y >= 0x08000000u && y < 0x08040000u);
-}
-
 template<typename FSMImpl>
 class fsm {
 public:
@@ -246,7 +228,6 @@ private:
     details::enter_result execute_enter(state_id_t state_id) {
         details::enter_result result = {state_id, 0, false};
 
-        if (!afsm_tables_ok(interceptor_table, enter_table)) { afsm_dispatch_fault(); return result; }
         if (interceptor_table[state_id]) {
             const auto& pack = *interceptor_table[state_id];
             auto enter_table_interceptors = static_cast<const on_enter_fn*>(pack.enter_table);
@@ -269,7 +250,6 @@ private:
     }
 
     state_id_t execute_run(state_id_t state_id) {
-        if (!afsm_tables_ok(interceptor_table, run_table)) { afsm_dispatch_fault(); return No_State_Change; }
         if (interceptor_table[state_id]) {
             const auto& pack = *interceptor_table[state_id];
             auto run_table_interceptors = static_cast<const on_run_fn*>(pack.run_table);
@@ -285,7 +265,6 @@ private:
     }
 
     void execute_exit(state_id_t state_id, const details::enter_result* rollback_info = nullptr) {
-        if (!afsm_tables_ok(interceptor_table, exit_table)) { afsm_dispatch_fault(); return; }
         if (rollback_info) {
             // If enter "transaction" was incomplete, do symmetric rollback
             if (rollback_info->main_state_executed) {
