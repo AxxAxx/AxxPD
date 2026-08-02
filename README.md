@@ -1,362 +1,164 @@
 [![Build Firmware](https://github.com/AxxAxx/AxxPD/actions/workflows/build.yml/badge.svg)](https://github.com/AxxAxx/AxxPD/actions/workflows/build.yml)
 [![License: GPL v3](https://img.shields.io/badge/License-GPLv3-blue.svg)](https://www.gnu.org/licenses/gpl-3.0)
 
-Interested in purchasing an AxxPD?
-On [Crowd Supply](https://www.crowdsupply.com/) you can back the AxxPD campaign (coming soon).
-
 <img src="./Documentation/logo.png" alt="AxxPD" width="200"/>
 
-# AxxPD Overview
-AxxPD is a programmable USB-C PD 3.1 EPR sink that lets you use any USB-C PD charger as a bench power supply. It negotiates the best available voltage from the charger -- anywhere from 3.3 V to 48 V and up to 240 W depending on what the charger supports -- and delivers power through XT30 and 4 mm shrouded banana jack outputs.
+# AxxPD
 
-Designed for lab and field use by embedded developers, ham radio operators, RC/drone hobbyists and electronics enthusiasts. AxxPD features 20-bit precision measurement, multi-layer hardware protection, a 1.47" IPS color display with 6 UI screens, SCPI automation over USB, and a CNC milled aluminum enclosure with magnetic mount.
+AxxPD turns any USB-C PD charger into a programmable bench power supply. It negotiates the best voltage the charger offers — anywhere from 3.3 V to 48 V and up to 240 W — and delivers it through XT30 and 4 mm shrouded banana outputs, with 20-bit measurement, multi-layer hardware protection, a 1.47" color display, and SCPI automation over USB.
 
-The firmware is written for the [STM32G491CCU6](https://www.st.com/en/microcontrollers-microprocessors/stm32g491ce.html) in C/C++ and is open source under the GPL-3.0 license.
+Built for embedded developers, ham radio operators, RC/drone hobbyists and electronics enthusiasts. The firmware runs on an [STM32G491CCU6](https://www.st.com/en/microcontrollers-microprocessors/stm32g491ce.html) and is open source under the GPL-3.0 license.
+
+An assembled unit is available through [Crowd Supply](https://www.crowdsupply.com/) (campaign coming soon).
 
 ![AxxPD](./Documentation/photos/AxxPD.jpg)
 
-# Getting Started
+## Features
 
-## What You Need
+- USB-C PD 3.1 EPR sink — Fixed, PPS and AVS modes. Available voltages and power depend on the connected charger.
+- 20-bit voltage/current/power monitoring (INA228, 6.8 mΩ shunt).
+- Multi-layer hardware protection with sub-microsecond response — see [Protection](#protection).
+- 1.47" 320×172 IPS display (ST7789V) with 4-button navigation and six screens.
+- USB-CDC command interface (SCPI + shortcuts) and 20 Hz CSV telemetry.
+- Browser-based WebSerial dashboard — live readout, chart and CSV recording, zero install.
+- Programmable presets (5 slots) and voltage sequencing, stored in flash.
+- Energy tracking (INA228 Wh/Ah accumulators) and PPS-based constant-current mode.
+- CNC aluminium enclosure with magnetic mount; dual XT30 + 4 mm banana outputs.
 
-- **USB-C PD charger** -- any charger that supports USB Power Delivery (laptop chargers, GaN chargers, etc.). Higher power chargers (65 W+) unlock more voltage options.
-- **USB-C cable** -- to connect the charger to AxxPD.
-- **USB data cable** (optional) -- to monitor and control AxxPD from your PC via the WebSerial dashboard or serial terminal.
-
-## First Power-On
-
-1. Plug your USB-C PD charger into AxxPD. The splash screen appears briefly.
-2. The **boot PDO selector** shows all voltages your charger supports (5 V, 9 V, 15 V, 20 V, etc.).
-3. Use **UP/DOWN** to highlight a voltage, then press **SELECT** to confirm. Or wait 10 seconds for auto-select.
-4. The **Dashboard** screen appears with live voltage, current and power readouts.
-
-## Basic Operation
-
-AxxPD has 4 buttons:
-- **UP / DOWN** -- adjust voltage or navigate menus (hold to repeat)
-- **SELECT** -- confirm selection, cycle screens, enter edit mode
-- **POWER** -- short press: output ON/OFF, long press: output OFF
-
-The output starts **OFF** for safety. Press POWER to enable it. The status bar turns green when output is active.
-
-## Connecting to Your PC
-
-1. Connect a USB-C data cable between AxxPD and your PC (same port as power, if your cable supports data).
-2. Open [the dashboard](./Tools/AxxPD_Dashboard.html) in **Chrome or Edge 89+** (Firefox/Safari not supported -- WebSerial API required).
-3. Click **Connect** and select AxxPD from the device list.
-
-Alternatively, use any serial terminal at 115200 baud. Type `help` for a command list.
-
-## Safety Notes
-
-- **Always verify the voltage** before connecting your load.
-- **Output is OFF by default** -- press POWER to enable.
-- AxxPD monitors temperature and will warn at 60 C, shut down at 85 C.
-- Maximum output depends entirely on your charger's capabilities.
-- **Fault screens require SELECT to clear** -- the POWER button is blocked during active faults.
-- **Boot auto-select** defaults to a safe voltage (≤20 V) if the user doesn't interact within 10 seconds.
-
-# Table of Contents
-- [AxxPD Overview](#axxpd-overview)
-- [Getting Started](#getting-started)
-- [Features](#features)
-- [Specifications](#specifications)
-- [Schematic](#schematic)
-- [Protection Architecture](#protection-architecture)
-- [Power Flow](#power-flow)
-- [Boot Sequence](#boot-sequence)
-- [User Interface](#user-interface)
-- [WebSerial Dashboard](#webserial-dashboard)
-- [SCPI Command Reference](#scpi-command-reference)
-- [Testing](#testing)
-- [Firmware Update](#firmware-update)
-- [Building the Firmware](#building-the-firmware)
-- [Settings](#settings)
-- [Repository Structure](#repository-structure)
-- [Open Source and Licensing](#open-source-and-licensing)
-- [Third-Party Components](#third-party-components)
-- [Disclaimer](#disclaimer)
-
-# Features
-- USB-C PD 3.1 EPR sink supporting Fixed, PPS and AVS voltage modes. The available voltages and power depend entirely on the connected USB-C charger's capabilities.
-- 20-bit precision voltage, current and power monitoring via INA228 (6.8 mOhm shunt, 0.05% gain error).
-- Multi-layer hardware protection with sub-microsecond response times. See [Protection Architecture](#protection-architecture).
-- 1.47" 320x172 IPS TFT color display (ST7789V, SPI) with 4-button navigation and 6 UI screens: Dashboard, PDOs, Graph, Presets, Energy and Settings.
-- USB CDC serial interface for SCPI commands and data logging at 20 Hz.
-- Browser-based WebSerial dashboard with live readout, chart, and CSV recording (zero install).
-- USB DFU firmware updates via the STM32 ROM bootloader (button-hold at power-on, or the `dfu` CLI command).
-- Programmable voltage presets stored in flash (up to 5 slots).
-- Programmable voltage sequencing with configurable step times.
-- Energy tracking with INA228 hardware Wh/Ah accumulators.
-- Constant current mode via PPS operating current control.
-- CNC aluminum enclosure with magnetic mount (93 x 49 x 20 mm with connectors).
-- NTC thermal monitoring with staged protection (warn at 60 deg C, shutdown at 85 deg C).
-- Output bleed/discharge circuit for safe capacitor discharge when output is disabled.
-- Dual output: XT30 (female) and 4 mm shrouded banana jacks in parallel.
-
-# Specifications
+## Specifications
 
 | Parameter | Value |
 |-----------|-------|
-| Input | USB-C PD 3.1 EPR (3.3-48 V, up to 5 A) |
-| PD Modes | Fixed PDO, PPS (3.3-21 V), AVS (15-48 V) |
-| Max Power | 240 W (charger dependent) |
-| Voltage Measurement | 20-bit, 0-85 V range, ~1 mV resolution |
-| Current Measurement | 20-bit, 6.8 mOhm shunt, ~0.1 mA resolution |
-| OVP | Hardware: LTC4368 (53 V) + COMP1 backup |
-| OCP | Hardware: LTC4368 (7.4 A) + INA228 ALERT backup |
-| Display | 1.47" 320x172 IPS TFT (ST7789V, SPI) |
-| Outputs | XT30 female + 4 mm shrouded banana jacks |
-| Interface | USB CDC serial (SCPI + CLI) |
-| MCU | STM32G491CCU6 (Cortex-M4F, 128 MHz) |
-| Flash Usage | ~75% of 256 KB |
-| Enclosure | CNC aluminum, magnetic mount |
-| Dimensions | 93 x 49 x 20 mm (with connectors) |
+| Input | USB-C PD 3.1 EPR (3.3–48 V, up to 5 A) |
+| PD modes | Fixed PDO, PPS (3.3–21 V), AVS (15–48 V) |
+| Max power | 240 W (charger dependent) |
+| Measurement | 20-bit, ~1 mV / ~0.1 mA resolution (INA228, 6.8 mΩ) |
+| OVP | LTC4368 (~53 V) + COMP1/DAC backup |
+| OCP | LTC4368 (~7.4 A) + INA228 ALERT backup |
+| Display | 1.47" 320×172 IPS TFT (ST7789V, SPI) |
+| Outputs | XT30 female + 4 mm shrouded banana (parallel) |
+| MCU | STM32G491CCU6 (Cortex-M4F, 128 MHz, 256 KB flash) |
+| Enclosure | CNC aluminium, magnetic mount, 93 × 49 × 20 mm |
 
-# Schematic
-The schematic for AxxPD is shown below. The full-resolution vector version is available as [SVG](./Documentation/AxxPD_Schematic.svg). The MCU is a [STM32G491CCU6](https://www.st.com/en/microcontrollers-microprocessors/stm32g491ce.html) (Cortex-M4F, 256 KB flash, 112 KB SRAM).
+## Getting Started
 
-![AxxPD Schematic](./Documentation/photos/AxxPD_Schematic.png)
+Plug a USB-C PD charger into AxxPD. After the splash screen, the **boot PDO selector** lists the voltages your charger supports — use **UP/DOWN** to pick one and **SELECT** to confirm (or wait 10 s for a safe auto-select of ≤ 20 V). The **Dashboard** then shows live V/I/W.
 
-# Protection Architecture
-AxxPD implements multiple independent protection layers, ordered by response time (fastest first). The hardware protection operates autonomously without firmware involvement.
+The four buttons are **UP/DOWN** (adjust / navigate, hold to repeat), **SELECT** (confirm / cycle screens / edit) and **POWER** (short: output on/off; long: off). The output starts **OFF**; the status bar turns green when it is live.
 
-| Layer | Component | Response Time | Function |
-|-------|-----------|---------------|----------|
-| 1 | SMBJ58A TVS | < 1 ns | Passive VBUS voltage clamp at ~64 V |
-| 2 | TPD4S480 | ~100 ns | CC/SBU short-to-VBUS disconnect protection (63 V withstand, 48 V EPR rated) |
-| 3 | LTC4368 OVP | ~6 us | Primary OVP via OV pin divider (53 V trip) |
-| 4 | COMP1 + TIM15 BKIN | ~275 us | Backup OVP -- hardware comparator forces SHDN LOW, no CPU involvement |
-| 5 | LTC4368 OCP | ~8 us | Primary OCP -- 50 mV across 6.8 mOhm sense resistor (7.4 A forward trip) |
-| 6 | INA228 ALERT EXTI | ~150 us | Backup OCP -- configurable current threshold, EXTI ISR disables output |
-| 7 | Firmware polling | ~1-10 ms | Thermal limits, energy limits, timer shutoff |
-| 8 | R_GPD pull-down | Passive | Fail-safe -- MOSFET gates default OFF if LTC4368 unpowered |
+To control it from a PC, connect a USB-C data cable and open [the dashboard](./Tools/AxxPD_Dashboard.html) in Chrome or Edge 89+ (WebSerial required), or use any serial terminal at 115200 baud and type `help`.
 
-The LTC4368 hot-swap controller drives back-to-back BSC070N10NS5 MOSFETs with a charge pump gate drive (+13.1 V). The COMP1 + DAC3 backup OVP threshold is software-adjustable per negotiated voltage. A 100K pull-down on the SHDN pin (PA1/TIM15_CH1N) ensures the output remains off during MCU boot and reset.
+**Safety:** verify the voltage before connecting a load; output is OFF by default; the device warns at 60 °C and shuts down at 85 °C; a fault screen must be cleared with SELECT (POWER is blocked during a fault). Maximum output is limited by your charger.
 
-Additional firmware protection features:
-- **OCP retry with soft-start** -- configurable 3-retry policy (default) handles hot-plug inrush current. Output caps stay charged during retry for cleaner recovery via LTC4368 gate ramp.
-- **Charger disconnect detection** -- output auto-disabled when PD contract is lost.
-- **Output toggle cooldown** -- 1.5 s minimum between enable events to prevent MOSFET thermal stress.
-- **Fault buzzer override** -- critical fault tones always play even if buzzer is disabled in settings.
-- **Post-suppression fault poll** -- after the inrush suppression window expires, firmware polls LTC4368_FLT, INA228_ALERT, and COMP1 OVP to catch edge-triggered faults missed during suppression.
-- **OCP bounds** -- CLI `protect ocp` enforces 0.1 A minimum and 6 A maximum.
+## Protection
 
-# Power Flow
-```
-USB-C (3.3-48 V VBUS)
-    |
-    +--> SMBJ58A TVS (passive clamp)
-    |
-    +--> LTC4368-2 --> Q1 --> Q2 --> R_SENSE (6.8 mOhm)
-    |       OVP: 53 V, UVP: 2.0 V, OCP: 7.4 A, RCP: -0.44 A
-    |
-    +--> INA228 (ALERT --> PB11 EXTI, measures load current)
-    |
-    +--> Output flyback Schottky + Output TVS + switched bleed
-    |
-    +--> XT30 + 4mm Banana Jacks (parallel)
+Independent protection layers, fastest first. The hardware layers act autonomously, without firmware.
 
-USB-C VBUS --> LM5166 sync buck (3-65 V) --> 3.3 V rail
-```
+| # | Component | Response | Function |
+|---|-----------|----------|----------|
+| 1 | SMBJ58A TVS | < 1 ns | Passive VBUS clamp (~64 V) |
+| 2 | TPD4S480 | ~100 ns | CC/SBU short-to-VBUS disconnect (48 V EPR rated) |
+| 3 | LTC4368 OVP | ~6 µs | Primary over-voltage (~53 V trip) |
+| 4 | LTC4368 OCP | ~8 µs | Primary over-current (50 mV / 6.8 mΩ ≈ 7.4 A) |
+| 5 | INA228 ALERT | ~150 µs | Backup OCP (configurable), EXTI disables output |
+| 6 | COMP1 + TIM15 | ~275 µs | Backup OVP — comparator forces SHDN low, no CPU |
+| 7 | Firmware poll | ~1–10 ms | Thermal, energy and timer limits |
+| 8 | SHDN pull-down | passive | Fail-safe — output defaults OFF if MCU/LTC4368 unpowered |
 
-# Boot Sequence
-AxxPD is entirely bus-powered from VBUS with no battery. A two-phase cold boot is used to handle the charger's pre-contract current limit:
+The LTC4368 hot-swap controller drives back-to-back MOSFETs; the COMP1/DAC backup OVP threshold tracks the negotiated voltage. Firmware adds OCP soft-start retry (default 3×) for hot-plug inrush, charger-disconnect shutoff, and a 1.5 s output-toggle cooldown.
 
-**Phase 1 -- 16 MHz HSI (low current, PD negotiation):**
-1. Dead-battery pull-downs on PA9/PA10 present Rd to source, source provides 5 V
-2. HAL init at 16 MHz HSI (minimal current draw)
-3. UCPD + DMA init, PD stack negotiates 5 V contract
-4. Stabilization loop -- tick PD for up to 1 s, break early on contract
+## User Interface
 
-**Phase 2 -- 128 MHz PLL (full speed):**
-5. Switch to 128 MHz PLL (APB1 prescaler /8 keeps UCPD timing correct)
-6. All peripheral init (ADC, I2C, SPI, USB, COMP, TIM, DAC)
-7. Splash screen, cable emulation, boot PDO selector
-8. EPR entry attempted at 1 s mark, auto-select after 10 s
-9. Watchdog start (5 s), main loop at 100 Hz INA228 / 30 Hz UI
+Six screens, cycled with SELECT:
 
-# User Interface
-AxxPD has a 1.47" 320x172 IPS TFT display (ST7789V, SPI at 32 MHz) and 4 buttons:
-- **UP** -- increase value / scroll up (hold-to-repeat)
-- **DOWN** -- decrease value / scroll down (hold-to-repeat)
-- **SELECT** -- confirm / cycle screens
-- **POWER** -- short press: output ON/OFF, long press: output OFF
+1. **Dashboard** — large V/I/W readout; set voltage/current with live edit and CC/CV indication.
+2. **PDOs** — scrollable source capabilities incl. EPR AVS, plus cable e-marker info.
+3. **Graph** — rolling V/I plot, one sample per pixel for smooth scrolling; selectable 5/10/30/60 s window.
+4. **Presets** — five named slots, stored in flash.
+5. **Energy** — session runtime, Wh/Ah, plus average and peak I/P (long-press SELECT resets).
+6. **Settings** — grouped menus: Mode, Display, Sound, Protection, Tools, Calibration, System.
 
-**Screen 1 -- Dashboard:**
-Large V (yellow) / I (red) / W (green) readout. SET voltage and current targets. CC/CV mode indicator. Live UP/DOWN adjustment with blinking cursor in edit mode.
+Defaults: output OFF at boot, OCP 5.5 A, OVP 55 V, 3-retry, 10 s graph window. Settings persist in the last 2 KB flash page (magic + CRC).
 
-**Screen 2 -- PDOs:**
-Scrollable list of source capability PDOs including EPR AVS entries. The cursor starts on the currently active contract. Cable e-marker info.
+## Command Interface
 
-**Screen 3 -- Graph:**
-Rolling V/I plot (10 s window). Column-based rendering for fast SPI updates. 15 Hz throttle.
-
-**Screen 4 -- Presets:**
-5 named user slots. Select and activate with one button press. Stored in flash.
-
-**Screen 5 -- Energy:**
-Session dashboard: live V/A/W, runtime since reset, accumulated Ah/Wh, plus average and peak current/power for the session. Long-press SELECT to reset everything.
-
-**Screen 6 -- Settings:**
-7 groups with scrollable menus: Mode, Display, Sound, Protection, Tools, Calibration, System.
-
-# WebSerial Dashboard
-A browser-based dashboard is included at [`Tools/AxxPD_Dashboard.html`](./Tools/AxxPD_Dashboard.html). Open it in Chrome or Edge 89+ and connect to AxxPD via USB-C. No drivers or installs required. The dashboard provides:
-- Live voltage, current and power readout
-- Rolling V/I chart with hover tooltip
-- PDO selector dropdown
-- Output ON/OFF and lock controls
-- CSV recording -- click Record, run your test, click Stop, then Download CSV (20 Hz telemetry with timestamps)
-- Interactive SCPI terminal with command history
-
-# SCPI Command Reference
-AxxPD has a comprehensive command interface over USB CDC serial (115200 baud) supporting both interactive shortcut commands and full SCPI. See the **[complete command reference](./Documentation/AxxPD_Command_Reference.md)** for all commands, SCPI subsystems, scripting examples and the data stream format.
-
-Key commands:
+AxxPD exposes both interactive shortcuts and full SCPI over USB-CDC (115200 baud). See the **[complete command reference](./Documentation/AxxPD_Command_Reference.md)** for every command, the SCPI subsystems, scripting examples and the telemetry format.
 
 | Command | Description |
 |---------|-------------|
 | `list` | List available source PDOs |
-| `set <V> [A]` | Set voltage (auto-selects best PDO type) |
-| `setpdo <N>` | Select PDO by index |
-| `setpps <V> [A]` | Set PPS voltage and optional current limit |
-| `setavs <V>` | Set AVS voltage (EPR) |
+| `set <V> [A]` | Set voltage (auto-selects the best PDO type) |
+| `setpps <V> [A]` / `setavs <V>` | PPS / AVS (EPR) request |
 | `on` / `off` | Enable / disable output |
 | `epr` / `spr` | Enter / leave EPR mode |
-| `meas` | Read voltage, current, temperatures + I2C diagnostics |
-| `stream on [hz]` / `stream off` | CSV telemetry (default 20 Hz, up to 1 kHz) |
-| `selftest` | Walk all PDOs and report pass/fail |
-| `protect ocp <A>` | Set OCP threshold |
-| `protect ovp <V>` | Set OVP threshold |
-| `protect status?` | Query protection status |
-| `protect clear` | Clear fault latch |
-| `seq add <V> <t_ms>` | Add voltage sequence step |
-| `seq run` / `seq stop` | Run / stop voltage sequence |
-| `reboot` | Reboot device |
-| `dfu` | Enter DFU bootloader |
+| `meas` | Voltage, current, temperatures + I²C diagnostics |
+| `stream on [hz]` / `off` | CSV telemetry (default 20 Hz, up to 1 kHz) |
+| `protect ocp\|ovp <val>` / `status` / `clear` | Protection control |
+| `seq add <V> <ms>` / `run` / `stop` | Voltage sequencing |
+| `selftest` · `reboot` · `dfu` | Self-test · reboot · enter DFU |
 
-See `Firmware/axxpd_firmware/cli.cpp` for the complete command table.
+## Testing
 
-# Testing
-
-Two host-side test tools live in `Tools/` (Python + pyserial). Both drive the device entirely over the USB-CDC command interface and need **no load connected**:
-
-- **`charger_test.py`** — walks every advertised PDO (SPR Fixed, PPS min/mid/max, EPR Fixed, EPR AVS min/mid/max) plus a random voltage sweep, measures VBUS at each step and checks tolerance. Validates PD negotiation across the full voltage range against any charger.
-- **`axxpd_selftest_full.py`** — a comprehensive standalone feature test (SCPI/CLI plumbing and error queue, capability discovery, the full voltage sweep with per-step measured voltages, the measurement subsystem, output enable/disable, protection configuration, EPR mode, the fault log and the telemetry stream). Writes a timestamped `.md`/`.txt` report (with a colour-coded pass/fail summary) and exits non-zero on any failure (CI-friendly).
+Two host-side tools in `Tools/` (Python + pyserial) drive the device over USB-CDC and need **no load connected**:
 
 ```bash
-python Tools/charger_test.py            # PD negotiation across all levels
-python Tools/axxpd_selftest_full.py     # full standalone feature test
+python Tools/charger_test.py         # verify PD negotiation across all levels
+python Tools/axxpd_selftest_full.py  # full standalone feature test (colour report, CI-friendly)
 ```
 
-# Firmware Update
-There is no custom bootloader -- the application runs directly from flash at `0x08000000`. Updates use the STM32's built-in ROM DFU bootloader over USB, or an SWD programmer.
+`axxpd_selftest_full.py` writes a timestamped pass/fail report and exits non-zero on failure.
 
-## USB DFU
-1. Enter the STM32 ROM DFU bootloader either by:
-   - **Button-hold:** hold the boot button while plugging in power, or
-   - **Serial command:** send `dfu` over USB serial (aliases: `fwupd`, `bootloader`, SCPI `:SYST:DFU`)
-2. The device enumerates as an STM32 DFU device. Use [STM32CubeProgrammer](https://www.st.com/en/development-tools/stm32cubeprog.html) (USB connection) or `dfu-util` to flash the `.bin` file at `0x08000000`
-3. Power cycle or reset after flashing to return to the AxxPD firmware
+## Firmware Update
 
-## SWD Programmer
-1. Download the latest `AxxPD.bin` from [Releases](https://github.com/AxxAxx/AxxPD/releases)
-2. Connect an ST-Link programmer to the SWD pads (GND, 3.3V, SWCLK, SWDIO)
-3. Flash using STM32CubeProgrammer or the command line:
-```
-STM32_Programmer_CLI -c port=SWD freq=4000 -w AxxPD.bin 0x08000000 -v -rst
-```
+The application runs directly from flash at `0x08000000` (no custom bootloader).
 
-# Building the Firmware
-The firmware targets the STM32G491CCU6 and is built with STM32CubeIDE or arm-none-eabi-gcc.
+- **USB DFU** — enter the STM32 ROM bootloader (hold the boot button while applying power, or send `dfu` over serial), then flash the `.bin` at `0x08000000` with [STM32CubeProgrammer](https://www.st.com/en/development-tools/stm32cubeprog.html) or `dfu-util`. A USB-A source keeps VBUS up in ROM DFU.
+- **SWD** — connect an ST-Link to the SWD pads and flash `AxxPD.bin`:
+  ```
+  STM32_Programmer_CLI -c port=SWD mode=UR reset=HWrst -w AxxPD.bin 0x08000000 -v -rst
+  ```
 
-**Option 1 -- STM32CubeIDE:**
-1. Import the `Firmware/` directory as an existing STM32CubeIDE project
-2. Build with the default Debug or Release configuration
+## Building
 
-**Option 2 -- Command line:**
-```
-cd Firmware
-make -j$(nproc)
-```
-Requires `arm-none-eabi-gcc` on your PATH. The firmware compiles to approximately 75% of the 256 KB flash at `-Os` optimization.
+Import `Firmware/` into STM32CubeIDE, or build from the command line with `arm-none-eabi-gcc` on your PATH:
 
-# Settings
-Settings are accessed via the Settings screen (Screen 6) using the 4-button navigation. Settings are stored in the last 2 KB page of internal flash with magic byte and CRC validation.
-
-| Group | Setting | Description | Default |
-|-------|---------|-------------|---------|
-| Mode | Restore last V/I | Re-request the last **SPR** voltage/current at boot (EPR voltages are not auto-restored — select them manually after boot) | OFF |
-| Mode | Power on boot | Auto-arm the output once the PD contract settles (5 s abort countdown) | OFF |
-| Mode | Start locked | Boot with the UI locked | OFF |
-| Mode | Boot PDO select | Show the boot PDO selector screen | ON |
-| Mode | Serial terminal | Enable USB CDC serial interface | ON |
-| Mode | Splash screen | Show splash logo at boot | ON |
-| Display | Temp unit | Celsius / Fahrenheit | Celsius |
-| Display | Graph window | Graph screen time window | 10 s |
-| Sound | Buzzer | Enable/disable buzzer (fault tones always play) | ON |
-| Sound | Startup beep | Beep at boot | ON |
-| Protection | OCP limit | Over-current protection limit | 5.5 A |
-| Protection | OVP limit | Over-voltage protection (COMP1+DAC backup) | 55 V |
-| Protection | OPP limit | Over-power protection limit | OFF |
-| Protection | Timer shutoff | Auto-disable output after countdown | OFF |
-| Protection | Ah limit | Disable output at charge limit | OFF |
-| Protection | Wh limit | Disable output at energy limit | OFF |
-| Protection | OCP retry | Latch / 1-retry / 3-retry on fault | 3-retry |
-| Protection | CC Thresh | Charge-complete current threshold | OFF |
-| Protection | CC Hold | Charge-complete hold time | 30 s |
-| Tools | Charger info | Show charger identity and capabilities | -- |
-| Tools | Cable info | Show cable e-marker info | -- |
-| Tools | Self-test | Walk all source PDOs, report pass/fail | -- |
-| Calibration | V offset | Voltage measurement offset | 0 |
-| Calibration | I offset | Current measurement offset | 0 |
-| System | Version | Show firmware and hardware version (SELECT shows FW + HW) | -- |
-| System | Load defaults | Restore factory settings | -- |
-| System | Save & Reboot | Save settings to flash and reboot | -- |
-| (list) | Back | Exit the settings menu to the normal screens (listed below System in the group list; settings auto-save on change) | -- |
-
-# Repository Structure
-```
-AxxPD/
-  Firmware/              STM32G491 firmware (C/C++17, STM32CubeIDE project)
-    axxpd_firmware/      AxxPD application code (GPL-3.0)
-    Core/                STM32 HAL initialization and peripherals
-    Drivers/             STM32 HAL, CMSIS, LCD driver, uGUI
-    pdsink/              USB PD 3.2 protocol stack (MIT)
-    etl/                 Embedded Template Library (MIT)
-    Middlewares/         STM32 USB Device Library
-    USB_Device/          USB CDC application layer
-  Tools/                 WebSerial dashboard, host-side test scripts
-  Documentation/         Schematic, command reference, product photos
+```bash
+cd Firmware && make -j
 ```
 
-# Open Source and Licensing
+Output is `build/AxxPD.elf`; `-Os`, ~77 % of the 256 KB flash.
 
-## Firmware (Open Source)
-The AxxPD firmware is fully open source under the [GNU General Public License v3.0](LICENSE). You are free to study, modify and redistribute the firmware source code. The complete build toolchain (Makefile, linker scripts, STM32CubeIDE project files) is included so you can compile and flash the firmware yourself.
+## Repository Structure
 
-## Hardware (Proprietary)
-The PCB layout, component placement and enclosure CAD files are proprietary and not included in this repository. The [schematic](#schematic) is published for reference but the production design files are not open source.
+```
+Firmware/         STM32G491 firmware (C/C++17, CubeIDE project)
+  axxpd_firmware/ Application code (GPL-3.0)
+  Core/ Drivers/  HAL, CMSIS, LCD driver, uGUI
+  pdsink/ etl/    USB-PD stack + Embedded Template Library (MIT)
+Tools/            WebSerial dashboard, host-side test scripts
+Documentation/    Schematic (SVG), command reference, photos
+```
 
-If you are interested in the hardware design, AxxPD is available as an assembled and tested unit through [Crowd Supply](https://www.crowdsupply.com/).
+The schematic is published as [SVG](./Documentation/AxxPD_Schematic.svg) for reference.
 
-## Trademark
-"AxxPD" is a trademark of Axel Johansson. Derivative works may describe themselves as "based on AxxPD" or "derived from AxxPD firmware" for attribution, but must not use "AxxPD" as a product name. See [NOTICE](NOTICE) for full details.
+## Licensing
 
-# Third-Party Components
-AxxPD firmware includes the following third-party open-source components:
+The **firmware is open source** under the [GPL-3.0](LICENSE), with the full toolchain (Makefile, linker script, CubeIDE project) included so you can build and flash it yourself. The **PCB and enclosure design files are proprietary** and not part of this repository; the schematic is published for reference only.
 
-| Component | License | Description |
-|-----------|---------|-------------|
-| [pdsink](https://github.com/pdsink/pdsink) | MIT | USB PD 3.2 protocol stack |
-| [ETL](https://github.com/ETLCPP/etl) | MIT | Embedded Template Library |
-| [uGUI](https://github.com/AxxAxx/uGUI) | Custom permissive (see its LICENSE.md) | Micro Graphics Library |
-| STM32 HAL / USB Device Library | BSD-3-Clause | STMicroelectronics device libraries |
-| CMSIS | Apache-2.0 | Arm Cortex-M support headers |
+"AxxPD" is a trademark of Axel Johansson. Derivatives may state they are "based on AxxPD" but must not use "AxxPD" as a product name — see [NOTICE](NOTICE).
 
-# Disclaimer
-AxxPD is provided as-is with no warranty or guarantees on functionality or reliability. The author accepts no liability for any harm or loss resulting from its use. AxxPD handles voltages up to 48 V and currents up to 5 A -- always verify your setup and connections before enabling the output.
+### Third-party components
 
-## Stargazers over time
+| Component | License |
+|-----------|---------|
+| [pdsink](https://github.com/pdsink/pdsink) — USB-PD stack | MIT |
+| [ETL](https://github.com/ETLCPP/etl) — Embedded Template Library | MIT |
+| [uGUI](https://github.com/AxxAxx/uGUI) — graphics library | Custom permissive |
+| STM32 HAL / USB Device Library | BSD-3-Clause |
+| CMSIS | Apache-2.0 |
+
+## Disclaimer
+
+AxxPD is provided as-is, with no warranty. It handles up to 48 V / 5 A — always verify your setup before enabling the output. The author accepts no liability for any harm or loss resulting from its use.
+
 [![Stargazers over time](https://starchart.cc/AxxAxx/AxxPD.svg?variant=adaptive)](https://starchart.cc/AxxAxx/AxxPD)
