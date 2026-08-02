@@ -224,10 +224,15 @@ static uint8_t g_ina_recover_fail_cycles = 0;  /* recoveries with no good read b
 #endif
 
 /* [FIX 2026-08-01] Contract-relative software OVP sustain time. The overshoot
- * must persist continuously this long before latching, so a cap-discharge
- * transient on a voltage step-down (bleed-assisted, resolves well under this)
- * can never trip it. Long enough to never fire on a legitimate PD/EPR
- * transition; short enough to catch a real sustained charger overshoot. */
+ * must persist continuously this long before latching. Long enough to never
+ * fire on a legitimate PD/EPR transition; short enough to catch a real
+ * sustained charger overshoot.
+ * [FIX 2026-08-02] NOTE: the sustain time alone does NOT cover a user voltage
+ * DOWN-step with no load — the bleed is OFF while the output is enabled and
+ * the LTC4368 blocks reverse current, so the output caps self-discharge
+ * through ~1 MΩ (tau ~50 s), parking above the new contract far longer than
+ * 1 s. That case is handled by the down-step reference hold in the OVP check
+ * itself (see swovp_ref below). */
 #define OVP_SW_SUSTAIN_MS         1000U
 
 /* [FIX 2026-08-01] Reset-cause capture + abnormal-reboot autostart safety.
@@ -319,7 +324,13 @@ static void I2C3_BusRecover(void)
     /* Clear the latched BUSY flag and restore normal AF operation. */
     __HAL_RCC_I2C3_FORCE_RESET();
     __HAL_RCC_I2C3_RELEASE_RESET();
-    MX_I2C3_Init();                 /* HAL_I2C_Init -> MspInit restores PA8/PC11 AF */
+    /* [FIX 2026-08-02] HAL_I2C_Init() only runs HAL_I2C_MspInit() (which puts
+     * PA8/PC11 back into their I2C3 AF) when the handle state is
+     * HAL_I2C_STATE_RESET — after the boot-time init it is READY, so a bare
+     * MX_I2C3_Init() here left the pins parked as the bit-bang GPIOs
+     * configured above. DeInit first so MspInit genuinely re-runs. */
+    HAL_I2C_DeInit(&hi2c3);
+    MX_I2C3_Init();                 /* state is RESET now -> MspInit restores the AF pins */
 }
 
 /* --- Autostart countdown (power_on_boot) accessors, used by the UI --- */
@@ -516,7 +527,13 @@ int main(void)
 
   /* PD stack already initialized in Phase 1+2 above */
   axxpd_enable_tick();
-  INA228_SetIdleCallback(axxpd_run);
+  /* [FIX 2026-08-02] The idle hook fires from INSIDE an in-flight INA228 I2C
+   * burst. axxpd_run() is the full tick — it also services the CLI/CDC via
+   * cli_poll(), which can re-enter INA228_ReadAll() and other non-reentrant
+   * drivers from that context. Per axxpd_main.cpp the only ISR/idle-safe
+   * entry point is axxpd_tick_pd() (PD state machine only, reentrancy-
+   * guarded; no CLI, no CDC, no UART). */
+  INA228_SetIdleCallback(axxpd_tick_pd);
 
   /* --- Peripheral init --- */
   Buttons_Init();
@@ -643,6 +660,17 @@ int main(void)
       if (g_output_enabled && !g_hw_fault && axxpd_get_active_pdo_index() == 0) {
           Output_Disable();
           g_output_enabled = 0;
+      }
+
+      /* [FIX 2026-08-02] Fail-safe invariant: a latched hardware fault must
+       * imply the output is OFF. Every internal fault site pairs g_hw_fault=1
+       * with Output_Disable(), but external callers can break the pairing —
+       * e.g. cli.cpp's `on`/:OUTP ON handlers treat the fault-latched refusal
+       * from Output_Enable_Guarded() (code 3) as success and force-set
+       * g_output_enabled. SHDN was never raised in that case; this re-syncs
+       * the flag, keeps the bleed engaged and the fault latched. */
+      if (g_hw_fault && g_output_enabled) {
+          Output_Disable();
       }
 
       /* Tool state machine (selftest) — needs fast ticking */
@@ -805,18 +833,43 @@ int main(void)
                * COMP1 backup OVP is fixed (~55V) and only catches a gross
                * runaway; a charger that overshoots its *negotiated* contract
                * (e.g. 40V on a 20V contract, still <55V) would go uncaught.
-               * Trip when measured VBUS sustains above contract + a generous
-               * margin. SAFETY (must not break PD/EPR negotiation): software
-               * only — never touches the COMP1/DAC threshold; already gated by
-               * the fault-suppression window above; 20%+2V margin covers
-               * PPS/EPR/fixed tolerance; and requires the overshoot to persist
-               * OVP_SW_SUSTAIN_MS continuously, so a step-down cap-discharge
-               * transient cannot trip it. */
+               * Trip when measured VBUS sustains above the OVP reference + a
+               * generous margin. SAFETY (must not break PD/EPR negotiation):
+               * software only — never touches the COMP1/DAC threshold; already
+               * gated by the fault-suppression window above; 20%+2V margin
+               * covers PPS/EPR/fixed tolerance; and requires the overshoot to
+               * persist OVP_SW_SUSTAIN_MS continuously.
+               * [FIX 2026-08-02] Down-step reference hold. On a user voltage
+               * DOWN-step (e.g. 20V->5V) with the output ON and no/light load,
+               * the LTC4368 blocks reverse current and the bleed is off, so
+               * the output caps park near the OLD voltage (~1 MΩ discharge,
+               * tau ~50 s) while negotiated_v drops instantly — the previous
+               * claim that the 1 s sustain "cannot trip" on a step-down was
+               * WRONG for that case and false-latched OVP. Fix: reference the
+               * check to swovp_ref, which tracks the contract upward
+               * immediately but after a down-step HOLDS at the old (higher)
+               * contract until measured VBUS has genuinely fallen below the
+               * NEW contract's threshold, then relaxes to the new contract.
+               * Steady-state protection is preserved: the reference is never
+               * above max(old, new) contract, so during the hold a real
+               * charger overshoot beyond the OLD contract still trips; and
+               * from the first sample below the new threshold the reference
+               * equals the live contract again, so any later rise above
+               * new*1.2+2V latches exactly as before. Fail-safe: the
+               * reference can never drop below the live contract. */
               {
                   static uint32_t swovp_since = 0U;
+                  static float    swovp_ref   = 0.0f;   /* held OVP reference (V) */
                   float nv = axxpd_get_negotiated_v();  /* contract V, 0 if none */
-                  if (nv > 1.0f &&
-                      g_ina_reading.voltage_v > (nv * 1.20f + 2.0f)) {
+                  if (nv <= 1.0f) {
+                      swovp_ref = 0.0f;                 /* no contract — check idle */
+                  } else if (nv >= swovp_ref) {
+                      swovp_ref = nv;                   /* steady state / up-step */
+                  } else if (g_ina_reading.voltage_v < (nv * 1.20f + 2.0f)) {
+                      swovp_ref = nv;                   /* caps below new threshold — relax */
+                  }                                     /* else: hold old reference */
+                  if (swovp_ref > 1.0f &&
+                      g_ina_reading.voltage_v > (swovp_ref * 1.20f + 2.0f)) {
                       if (swovp_since == 0U) swovp_since = now ? now : 1U;
                       else if ((now - swovp_since) >= OVP_SW_SUSTAIN_MS) {
                           swovp_since = 0U;
@@ -1931,8 +1984,23 @@ void Output_Enable(void) {
  *   0 = enabled OK
  *   1 = blocked by the MOSFET toggle cooldown (1.5 s between enables,
  *       prevents gate-ramp thermal stress from rapid on/off cycling)
- *   2 = blocked by thermal cooldown (board still above 75 C) */
+ *   2 = blocked by thermal cooldown (board still above 75 C)
+ *   3 = blocked by a latched hardware fault (issue 'clear' first) */
 uint8_t Output_Enable_Guarded(void) {
+    /* [FIX 2026-08-02] Refuse a remote enable while a hardware fault is
+     * latched. Output_Enable() unconditionally clears g_hw_fault and opens a
+     * 1 s protection-suppression window, so a bare remote `on`/:OUTP ON used
+     * to silently discard the latched fault and re-energize straight into
+     * whatever tripped it. The front panel already refuses PWR presses while
+     * faulted (button handler in the main loop — only SELECT clears); this
+     * brings the remote path in line: the fault stays latched and the output
+     * stays OFF until an explicit `clear`. NOTE: today's cli.cpp callers only
+     * know codes 1/2 and report anything else as success — the output still
+     * remains safely off (Output_Enable is never called) and the fault/output
+     * invariant in the main loop re-syncs g_output_enabled, but cli.cpp
+     * should be taught code 3 for a truthful "blocked" message. */
+    if (g_hw_fault)
+        return 3;
     if (!g_output_enabled && g_ntc_temp >= THERMAL_COOLDOWN_C)
         return 2;
     if (!g_output_enabled &&

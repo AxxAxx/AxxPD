@@ -5,6 +5,10 @@
 #include "port.h"
 #include "utils/dobj_utils.h"
 
+// [AxxPD fix 2026-08-02] CMSIS intrinsics (__get_PRIMASK / __disable_irq /
+// __set_PRIMASK) for the trigger-setter critical sections below.
+#include "stm32g4xx.h"
+
 namespace pd {
 
 using namespace dobj_utils;
@@ -236,7 +240,18 @@ void DPM::request_new_power_level() {
     }
 }
 
+// [AxxPD fix 2026-08-02] The PD state machine runs from the SysTick ISR and
+// reads the trigger_* fields in get_request_data_object(); if that ISR fires
+// mid-update here (or an unsolicited Source_Capabilities arrives), it can
+// build an RDO from a half-written trigger set and request the wrong voltage.
+// Both setters therefore write the field group inside a short PRIMASK
+// critical section. The atomic NEW_POWER_LEVEL flag is set afterwards, in
+// request_new_power_level(), so the fields are fully visible before the PE
+// acts on the request.
+
 void DPM::trigger_variant(PDO_VARIANT pdo_variant, uint32_t mv, uint32_t ma) {
+    uint32_t primask = __get_PRIMASK();
+    __disable_irq();
     trigger_mv = mv;
     trigger_ma = ma;
     trigger_pdo_variant = pdo_variant;
@@ -244,15 +259,19 @@ void DPM::trigger_variant(PDO_VARIANT pdo_variant, uint32_t mv, uint32_t ma) {
     trigger_match_type = (pdo_variant == PDO_VARIANT::UNKNOWN)
         ? TRIGGER_MATCH_TYPE::USE_ANY
         : TRIGGER_MATCH_TYPE::BY_PDO_VARIANT;
+    __set_PRIMASK(primask);
     request_new_power_level();
 }
 
 void DPM::trigger_by_position(uint8_t position, uint32_t mv, uint32_t ma) {
+    uint32_t primask = __get_PRIMASK();
+    __disable_irq();
     trigger_mv = mv;
     trigger_ma = ma;
     trigger_match_type = TRIGGER_MATCH_TYPE::BY_POSITION;
     trigger_position = position;
     trigger_pdo_variant = PDO_VARIANT::UNKNOWN; // not used in this mode
+    __set_PRIMASK(primask);
     request_new_power_level();
 }
 

@@ -307,6 +307,7 @@ function setConnected(v) {
   $dot.classList.toggle('on', v);
   $stxt.textContent = v ? 'Connected' : 'Disconnected';
   $btn.textContent = v ? 'Disconnect' : 'Connect';
+  fwUpdateButtons(); // Flash button depends on `connected`
 }
 
 async function disconnect() {
@@ -347,10 +348,13 @@ async function readLoop() {
   // Clean up read pipe
   try { if (readPipe) await readPipe; } catch {}
   reader = null;
-  // The firmware updater owns teardown/reconnect while active — stay out of it.
+  // The firmware updater owns teardown/reconnect while active — stay out of
+  // it, but still clear `connected` so its verdict-wait escape can fire.
   if (connected && !updaterActive) {
     setConnected(false);
     attemptReconnect();
+  } else if (updaterActive) {
+    connected = false;
   }
 }
 
@@ -387,6 +391,10 @@ async function ensureWriter() {
 }
 
 async function sendLine(cmd) {
+  // While the updater owns the port, block everything except its own 'fwup'
+  // — deferred dashboard timers ('ct', 'stream on') must not inject commands
+  // into the update window.
+  if (updaterActive && cmd !== 'fwup') return;
   if (!port || !connected) return;
   lastSentCmd = cmd;
   try {
@@ -1060,6 +1068,8 @@ async function fwCloseAppPort() {
     try { if (port) await port.close(); } catch {}
   }
   port = null;
+  lineBuf = '';      // drop any pre-reset fragment so it can't splice onto
+  lastSentCmd = '';  // the first line seen after reconnect
   setConnected(false);
 }
 
@@ -1077,16 +1087,20 @@ async function fwCloseBlPort() {
 
 /* ── Update flow ───────────────────────────────────────────── */
 async function fwFlash() {
-  if (!fwFileInfo || !connected || fwUpdating || updaterActive) return;
+  if (fwUpdating || updaterActive) return;
+  if (!fwFileInfo) { fwSetPhase('Select a firmware .bin first.', null); return; }
+  if (!connected) { fwSetPhase('Connect the device first.', null); return; }
   fwUpdating = true;
   updaterActive = true;
   fwCancelRequested = false;
   fwUiBusy(true);
   fwStep = 'reboot';
+  let fwupSent = false;
   try {
     fwSetPhase('Rebooting device into update mode...', 0);
     fwFwupVerdict = null;
     await sendLine('fwup');
+    fwupSent = true;
     // Wait for the device's verdict. The device first steps the contract
     // down to 5 V SPR (EPR exit can take up to ~12 s) and only then replies:
     // '+FWUP' and resets, or '-FWUP <reason>' and stays in the app.
@@ -1108,6 +1122,18 @@ async function fwFlash() {
     $stxt.textContent = 'Updating firmware';
     await fwRunSession();
   } catch (e) {
+    // Once 'fwup' is out the device resets into the bootloader no matter
+    // what — a cancel during the verdict wait must not abandon the open app
+    // port (a later auto-reconnect would spray dashboard commands at the
+    // bootloader). Convert it into a normal failure that leaves the updater
+    // in charge with Retry/Cancel. fwStep is still 'reboot' only before
+    // fwCloseAppPort()/fwRunSession() have taken over the port.
+    if (fwupSent && fwStep === 'reboot' &&
+        (fwCancelRequested || (e && e.message === 'cancelled'))) {
+      try { await fwCloseAppPort(); } catch {}
+      fwCancelRequested = false;
+      e = new Error('cancelled — but fwup was already sent, so the device is waiting in the bootloader');
+    }
     await fwFail(e);
   }
 }
@@ -1211,6 +1237,17 @@ async function fwFail(e) {
   fwUpdating = false;
   try { await fwCloseBlPort(); } catch {}
   $stxt.textContent = 'Disconnected';
+  if (fwStep === 'restart') {
+    // Past +BOOT the image is flashed and verified — the device is running
+    // the new app, it just never re-enumerated for us. Retry would send
+    // HELLO at the app and fail bogusly; release the UI instead so the
+    // normal Connect button works.
+    updaterActive = false;
+    fwUiBusy(false);
+    fwLog('restart: ' + e.message, true);
+    fwSetPhase('Update flashed and verified, but the device did not reappear on USB. Unplug/replug the cable if needed, then click Connect to reconnect manually.', null);
+    return;
+  }
   if (cancelled) {
     updaterActive = false;
     fwUiBusy(false);

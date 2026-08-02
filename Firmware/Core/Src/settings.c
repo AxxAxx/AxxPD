@@ -302,6 +302,40 @@ static void settings_do_flash_write(void)
 }
 
 /**
+ * Erase the settings page and nothing else.  Called from the NMI handler
+ * (stm32g4xx_it.c) when a flash double-bit ECC error lands inside the
+ * settings page: a torn doubleword there (power loss mid-save) faults on
+ * the READ itself, so Settings_Init's CRC check never gets to run and
+ * every boot would NMI-loop.  Erasing the page lets the next boot see a
+ * blank page and load clean defaults instead.
+ *
+ * NMI-context notes: SysTick cannot preempt an NMI, so HAL timeouts make
+ * no progress — this relies only on the hardware completing the page
+ * erase (~25 ms, BSY always clears).  Best effort: the caller resets the
+ * MCU immediately afterwards regardless of outcome, and a failed erase
+ * just means the next boot lands here again and retries.
+ */
+void Settings_EraseSelf(void)
+{
+    FLASH_EraseInitTypeDef erase;
+    uint32_t page_error = 0;
+
+    erase.TypeErase = FLASH_TYPEERASE_PAGES;
+    erase.Banks     = SETTINGS_FLASH_BANK;
+    erase.Page      = SETTINGS_FLASH_PAGE;
+    erase.NbPages   = 1;
+
+    HAL_FLASH_Unlock();
+    /* Same retry-once pattern as settings_do_flash_write: the first
+     * attempt can fail on stale error flags, which the failed wait clears. */
+    if (HAL_FLASHEx_Erase(&erase, &page_error) != HAL_OK) {
+        page_error = 0;
+        (void)HAL_FLASHEx_Erase(&erase, &page_error);
+    }
+    HAL_FLASH_Lock();
+}
+
+/**
  * Request a settings save.  If EPR is active the write is deferred to
  * avoid a ~100 ms CPU stall that would miss the 500 ms KeepAlive
  * deadline and trigger a Hard Reset (VBUS drop + re-negotiation).

@@ -237,7 +237,11 @@ static void LCD_WriteData(uint8_t *buff, size_t buff_size)
       while(HAL_DMA_GetState(LCD_HANDLE.hdmatx)!=HAL_DMA_STATE_READY) {
         if (lcd_idle_cb) lcd_idle_cb();  /* tick PD stack during DMA wait */
         if ((HAL_GetTick() - dma_t0) > 100U) {
-          HAL_DMA_Abort(LCD_HANDLE.hdmatx);
+          /* Abort the whole SPI transfer, not just the DMA channel:
+           * HAL_DMA_Abort alone leaves hspi stuck in BUSY_TX so every
+           * later transmit returns HAL_BUSY — permanently dead display.
+           * HAL_SPI_Abort aborts the DMA AND resets the SPI state to READY. */
+          HAL_SPI_Abort(&LCD_HANDLE);
           break;
         }
       }

@@ -406,6 +406,34 @@ static void handle_data(char *args)
         return;
     }
 
+    /* Vet the app header BEFORE it reaches flash: app_crc_valid() exempts an
+     * unpatched header (size/crc = 0xFFFFFFFF) from the boot-time CRC gate so
+     * SWD dev images boot — but an UPLOADED unpatched image would get that
+     * same exemption, so a transfer dying after the header chunk would boot a
+     * half-written image (quick checks pass, dirty marker self-heals, jump →
+     * hang). Uploads must therefore carry a patched header (magic + real
+     * size/crc, see tools/patch_app_header.py); SWD flashing is unaffected.
+     * The 16 vetted bytes are magic..image_crc (bl_app_header_t). */
+    if (xfer_received < APP_HDR_OFFSET + 16U &&
+        xfer_received + len > APP_HDR_OFFSET) {
+        if (xfer_received > APP_HDR_OFFSET ||
+            xfer_received + len < APP_HDR_OFFSET + 16U) {
+            /* header split across chunks — cannot vet it before programming */
+            out_line("-DATA %u hdr\r\n", (unsigned)seq, 0U);
+            return;
+        }
+        const uint8_t *hp = chunk + (APP_HDR_OFFSET - xfer_received);
+        uint32_t hmagic, hsize, hcrc;
+        memcpy(&hmagic, hp,       4U);   /* bl_app_header_t.magic      */
+        memcpy(&hsize,  hp + 8U,  4U);   /* bl_app_header_t.image_size */
+        memcpy(&hcrc,   hp + 12U, 4U);   /* bl_app_header_t.image_crc  */
+        if (hmagic != APP_HDR_MAGIC || hsize != xfer_size ||
+            hcrc == APP_HDR_UNPATCHED) {
+            out_line("-DATA %u hdr\r\n", (unsigned)seq, 0U);
+            return;
+        }
+    }
+
     int rc = program_chunk(APP_BASE + xfer_received, chunk, len);
     if (rc != 0) {
         out_line("-DATA %u pgm%u\r\n", (unsigned)seq, (unsigned)(-rc));

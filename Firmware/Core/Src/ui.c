@@ -1640,6 +1640,14 @@ void UI_HandleButton(ButtonEvent_t event)
             return;
         case BTN_SEL_LONG:
             /* Exit tool: restore settings screen */
+            if (tool_active == TOOL_SELFTEST && st_running) {
+                /* Self-test aborted mid-run — it energizes the output (up
+                 * to AVS max). Mirror the normal-completion cleanup so the
+                 * terminals go safe instead of staying live at the last
+                 * test voltage. Output_Disable() also re-engages the bleed. */
+                Output_Disable();
+                axxpd_request_voltage(5000, 0);
+            }
             tool_active = TOOL_NONE;
             tool_scroll = 0;
             tool_drawn  = 0;

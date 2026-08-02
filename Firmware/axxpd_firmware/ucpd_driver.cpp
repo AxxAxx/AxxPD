@@ -414,6 +414,18 @@ void UcpdDriver::req_transmit() {
         return;
     }
 
+    // An RX message may have COMPLETED inside the masked window (RXMSGEND
+    // latched in SR, ISR not yet run).  If we started our TX now, the ISR's
+    // rxmsgend GoodCRC fast path would reconfigure DMA CH2 and fire TXSEND
+    // the instant the IRQ is re-enabled — mid-transmission — corrupting
+    // both our message and the GoodCRC.  Back off and let PRL retry; the
+    // pending RX gets serviced first.
+    if (ucpd_->SR & UCPD_SR_RXMSGEND) {
+        NVIC_EnableIRQ(UCPD1_IRQn);
+        port_.tcpc_tx_status.store(pd::TCPC_TRANSMIT_STATUS::FAILED);
+        return;
+    }
+
     // UCPD IRQ is masked here: safe to set up DMA CH2 + fire TXSEND.
     // If a message arrives between setup_tx_dma and SendMessage, the ISR
     // would send a GoodCRC on the same DMA channel, clobbering our Request.

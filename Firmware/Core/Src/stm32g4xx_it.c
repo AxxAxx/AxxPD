@@ -23,6 +23,7 @@
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
 #include "buttons.h"
+#include "bl_layout.h"   /* flash map + BL_REQ mailbox — ECC-NMI recovery */
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -49,6 +50,7 @@
 /* USER CODE BEGIN PFP */
 extern void axxpd_tick_pd(void);
 extern void axxpd_ucpd_irq(void);
+extern void Settings_EraseSelf(void);   /* settings.c — ECC-NMI recovery */
 /* USER CODE END PFP */
 
 /* Private user code ---------------------------------------------------------*/
@@ -89,9 +91,42 @@ void NMI_Handler(void)
   /* [FIX 2026-08-01] Flash double-bit ECC error raises NMI. Clear the ECC
    * flags (rc_w1) so the NMI does not immediately re-fire, then take a clean
    * reset instead of hanging until the IWDG bites and the fault loops. */
-  if (FLASH->ECCR & (FLASH_ECCR_ECCD | FLASH_ECCR_ECCC))
+  uint32_t eccr = FLASH->ECCR;
+  if (eccr & (FLASH_ECCR_ECCD | FLASH_ECCR_ECCC))
   {
+    /* [FIX 2026-08-02] A double error (ECCD) is PERSISTENT: the same read
+     * faults again on every boot, so a plain reset loops forever — the one
+     * field-brick vector left (a torn doubleword in the settings page NMIs
+     * inside Settings_Init before its CRC check can even run, and the
+     * bootloader never validates that page).  Recover based on WHERE the
+     * fault is: ADDR_ECC[18:0] holds the fail address as a doubleword-
+     * aligned byte offset from FLASH_BASE (RM0440 FLASH_ECCR; SYSF_ECC set
+     * means system flash — not ours, nothing to do). */
+    uint32_t fail = FLASH_BASE + (eccr & FLASH_ECCR_ADDR_ECC);
+
     FLASH->ECCR = FLASH_ECCR_ECCD | FLASH_ECCR_ECCC;
+
+    if ((eccr & FLASH_ECCR_ECCD) != 0U && (eccr & FLASH_ECCR_SYSF_ECC) == 0U)
+    {
+      if (fail >= APP_END && fail < (APP_END + FLASH_PAGE_BYTES))
+      {
+        /* Torn settings page (power loss mid-save): erase it so the next
+         * boot sees a blank page and loads defaults. Flash erase in NMI
+         * context is bounded (~25 ms, hardware always clears BSY) and is
+         * the last thing before the reset below anyway. */
+        Settings_EraseSelf();
+      }
+      else if (fail >= APP_BASE && fail < APP_END)
+      {
+        /* Torn app image: arm the bootloader-request mailbox (same
+         * contract as fwup / bl_it.c) so the next boot goes straight to
+         * bootloader mode without reading app flash at all. */
+        volatile uint32_t *req = (volatile uint32_t *)BL_REQ_ADDR;
+        req[0] = BL_REQ_MAGIC;
+        req[1] = ~BL_REQ_MAGIC;
+        __DSB();
+      }
+    }
   }
 
   NVIC_SystemReset();

@@ -123,10 +123,30 @@ extern volatile uint32_t g_fault_suppress_until;
 /* g_hw_fault / g_fault_source already declared in the extern "C" block above */
 }
 
+/* TX-stall watchdog: CDC_Transmit_Blocking() spins for its full timeout when
+ * a host asserts DTR but stops reading the IN endpoint (e.g. a suspended
+ * browser tab holding a WebSerial port). During that spin the main loop —
+ * software protections, buttons, PD servicing — stalls while the output may
+ * be live. Keep the per-write timeout short, and after a few consecutive
+ * timeouts drop to a ~2 ms probe so subsequent prints are effectively
+ * discarded instead of blocking. A successful transmit (host resumed reading,
+ * or a fresh DTR session) re-arms the normal timeout. */
+static constexpr uint32_t CDC_TX_TIMEOUT_MS  = 100;  /* per-write budget */
+static constexpr uint32_t CDC_TX_PROBE_MS    = 2;    /* budget while wedged */
+static constexpr uint8_t  CDC_TX_STALL_LIMIT = 3;    /* timeouts before probing */
+static uint8_t s_cdc_tx_stalls = 0;
+
 static void out(const char* s) {
     size_t len = strlen(s);
-    CDC_Transmit_Blocking(reinterpret_cast<const uint8_t*>(s),
-                          static_cast<uint16_t>(len), 1000);
+    uint32_t tmo = (s_cdc_tx_stalls >= CDC_TX_STALL_LIMIT) ? CDC_TX_PROBE_MS
+                                                           : CDC_TX_TIMEOUT_MS;
+    uint8_t res = CDC_Transmit_Blocking(reinterpret_cast<const uint8_t*>(s),
+                                        static_cast<uint16_t>(len), tmo);
+    if (res == USBD_BUSY) {   /* timed out — host holds DTR but isn't reading */
+        if (s_cdc_tx_stalls < CDC_TX_STALL_LIMIT) s_cdc_tx_stalls++;
+    } else {                  /* USBD_OK, or fast drop (no host / DTR low) */
+        s_cdc_tx_stalls = 0;
+    }
     UART_SendString(s);
 }
 static void out_char(char c) {
@@ -475,13 +495,41 @@ static void decode_contract(char* buf, size_t bufsz) {
 // Called after SOUR:VOLT / SOUR:CURR / SOUR:MODE writes.
 // -----------------------------------------------------------------------------
 
+/* Coalesced "Restore last V/I" persistence. Settings_SaveLastSettings() runs
+ * a synchronous flash page erase (~22-40 ms) that stalls ALL interrupts —
+ * including the 2 ms PD tick (risking a dropped PD message -> Soft Reset) —
+ * and burns settings-page endurance when a script sweeps :SOUR:VOLT/:CURR.
+ * Instead of writing on every distinct setpoint, park the values here and let
+ * cli_poll() commit once the setpoint has been idle for a while (same idea as
+ * settings.c's Settings_SaveDeferred coalescing). The commit still goes
+ * through Settings_Save(), so the EPR write-deferral applies as before, and
+ * the unchanged-value guard in Settings_SaveLastSettings() still skips
+ * no-op writes. Protection thresholds and presets are NOT routed through
+ * this — only the frequently-changing last setpoint. */
+static bool     last_save_pending = false;
+static uint32_t last_save_mv = 0;
+static uint32_t last_save_ma = 0;
+static uint32_t last_save_touch_ms = 0;
+static constexpr uint32_t LAST_SAVE_IDLE_MS = 2000;
+
+/* Commit any parked last-V/I values now. Called from cli_poll() after the
+ * idle window, and before reboot/dfu/fwup so the values survive the reset. */
+static void last_save_flush() {
+    if (!last_save_pending) return;
+    last_save_pending = false;
+    Settings_SaveLastSettings(last_save_mv, last_save_ma);
+}
+
 static void apply_source_target() {
     if (!s_dpm || !s_pe) return;
-    /* Persist the user's voltage selection for "Restore last V/I". Done before
-     * the trigger: a fresh 48V/EPR selection is still on the old SPR contract
-     * here, so the flash write commits immediately rather than deferring under
-     * EPR. Skipped automatically (unchanged-value guard) on re-applies. */
-    if (target_mv >= 3300U) Settings_SaveLastSettings(target_mv, target_ma);
+    /* Park the user's voltage selection for "Restore last V/I"; committed by
+     * cli_poll() once the setpoint stops changing (see last_save_flush). */
+    if (target_mv >= 3300U) {
+        last_save_pending  = true;
+        last_save_mv       = target_mv;
+        last_save_ma       = target_ma;
+        last_save_touch_ms = HAL_GetTick();
+    }
     switch (source_mode) {
         case SourceMode::AUTO:
             s_dpm->trigger_any(target_mv, target_ma);
@@ -586,6 +634,7 @@ static void do_idn() { out(IDN_STRING); outln(); }
 // SCPI alias: :SYST:REBOOT
 static void do_reboot() {
     out("rebooting...\r\n");
+    last_save_flush();   // commit any parked last-V/I before the reset
     HAL_Delay(50);   // let the UART TX FIFO drain
     NVIC_SystemReset();
     while (1) {}     // unreachable
@@ -611,6 +660,8 @@ static void do_dfu() {
         Output_Disable();
         g_output_enabled = 0;
     }
+
+    last_save_flush();   /* commit any parked last-V/I before leaving the app */
 
     /* Stretch IWDG to its hardware maximum (4095 * 256 / 32 kHz ~= 32.8 s)
      * so the ROM bootloader doesn't get reset mid-firmware-update. The IWDG
@@ -677,7 +728,14 @@ static void do_fwup() {
     }
 
     user_wants_epr = false;   // cli_poll re-pins EPR_AUTO_ENTER_DISABLED
-    if (s_dpm && axxpd_get_negotiated_v() > 5.5f) {
+    /* Step down (or refuse) not only when the contract is above 5 V, but
+     * also whenever EPR MODE is still active — a sink can hold a 5 V
+     * contract *inside* EPR mode, where the source still expects the
+     * EPR keep-alive. Arming the bootloader (no PD stack) from that state
+     * collapses VBUS ~1 s after reset. The wait below only proceeds once
+     * BOTH conditions clear; otherwise the -FWUP refusal fires. */
+    if (s_dpm && (axxpd_get_negotiated_v() > 5.5f ||
+                  (s_pe != nullptr && s_pe->is_in_epr_mode()))) {
         target_mv = 5000; target_ma = 0;
         s_dpm->trigger_any(5000, 0);
         uint32_t t0 = HAL_GetTick();
@@ -700,6 +758,7 @@ static void do_fwup() {
     out("+FWUP entering bootloader - use the dashboard firmware updater\r\n");
     out("power-cycle the device to return to the app without updating\r\n");
 
+    last_save_flush();   // safe here: guaranteed 5 V SPR, so the write is immediate
     Settings_ProcessDeferred();
 
     // On-screen notice (persists on the panel through the reset).
@@ -1789,6 +1848,8 @@ static bool try_shortcut(char* line) {
             out("Blocked: output toggle cooldown (min 1.5s between enables)\r\n");
         } else if (r == 2) {
             out("Blocked: board too hot - wait for thermal cooldown\r\n");
+        } else if (r == 3) {
+            out("Blocked: fault latched - send 'clear' first\r\n");
         } else {
             g_output_enabled = 1;
             out("Output ON\r\n");
@@ -2794,6 +2855,9 @@ static void dispatch_one(char* line) {
                 } else if (r == 2) {
                     err_push(-200, "Thermal cooldown active");
                     out("Error: board too hot - thermal cooldown\r\n");
+                } else if (r == 3) {
+                    err_push(-200, "Fault latched - clear first");
+                    out("Error: fault latched - send 'clear' first\r\n");
                 } else {
                     g_output_enabled = 1;
                     out("OK\r\n");
@@ -3140,6 +3204,13 @@ void cli_poll() {
     // strict sources when the DPM picks an SPR-slot PDO while in EPR mode.
     if (s_port && !user_wants_epr) {
         s_port->pe_flags.set(pd::PE_FLAG::EPR_AUTO_ENTER_DISABLED);
+    }
+
+    // Commit the coalesced last-V/I save once the setpoint has been idle
+    // (see last_save_flush) — a scripted sweep collapses to one flash write.
+    if (last_save_pending &&
+        (int32_t)(HAL_GetTick() - last_save_touch_ms) >= (int32_t)LAST_SAVE_IDLE_MS) {
+        last_save_flush();
     }
 
     // --- EPR failure tracking + ErrorRecovery ---
