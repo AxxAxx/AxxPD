@@ -13,7 +13,17 @@ panel (`fwup` reboots into the bootloader, USB upload), or ROM DFU / SWD for rec
 **Firmware verified good: the full standalone self-test passes 53/53** on hardware —
 all voltages (5/9/15/20/28 V EPR + PPS + AVS ranges), EPR mode entry, measurements,
 output on/off, protection config, and telemetry stream. **PD/EPR negotiation works.**
-Commits are on local `main`, ready to push. `origin/main` (`357ae83`) is the prior baseline.
+Commits are on local `main`. `origin/main` (`357ae83`) is the prior baseline.
+
+### Pre-release bug hunt (2026-08-02, commit `666b190`) — NOT yet flashed/tested
+A last-chance 5-reviewer panel produced ~15 fixes across bootloader/PD/protection/UI/updater.
+Builds clean (app 197 KB / 86 %, boot 20 KB). **Must re-flash + re-run 53/53 and specifically
+regression-test: (1) EPR entry still works, (2) a no-load voltage DOWN-step no longer false-
+trips SW-OVP, (3) `fwup` from EPR, (4) the web-dashboard flash cycle.** Highlights: settings-
+page torn-DW brick recovery in the app NMI handler (`stm32g4xx_it.c` + `Settings_EraseSelf`);
+SW-OVP down-step reference hold (`main.c`); `req_transmit` RXMSGEND race guard; DPM trigger
+PRIMASK critical section; INA idle callback → `axxpd_tick_pd`; LCD DMA-timeout `HAL_SPI_Abort`;
+remote `on` refuses a latched fault (returns 3). See the honest deferral list in the handover.
 
 ### The "unfindable layout-sensitive bug" was a BUILD-SYSTEM artifact — RESOLVED
 For days the new firmware appeared to fault-loop on boot, and "any code change (even a
