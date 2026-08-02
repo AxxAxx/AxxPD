@@ -16,7 +16,7 @@ interface with NO external load connected:
   E. Output enable/disable (verify VBUS present when ON, ~0V when OFF)
   F. Protection configuration (OVP/OCP set + read-back + bounds + status/clear)
   G. EPR mode entry
-  H. Fault log (flog)
+  H. Fault status (fault)
   I. Live telemetry stream (#S)
 
 Prints live PASS/FAIL, writes a timestamped .txt and .md report, and exits 0
@@ -422,11 +422,13 @@ def test_epr(ser):
 
 
 def test_faultlog(ser):
-    group("H. Fault log")
-    fl = query(ser, "flog", 1.5)
+    group("H. Fault status")
+    fl = query(ser, "fault", 1.5)
     joined = " ".join(fl)
-    ok = ("no faults" in joined.lower()) or any(re.match(r"^\d+,", l) for l in fl)
-    check("`flog` returns valid fault-log output", ok, joined[:50])
+    # Firmware exposes current fault status via `fault`/`faults` (fault=N src=M);
+    # there is no separate historical fault-log dump command.
+    ok = "fault=" in joined.lower()
+    check("`fault` returns fault status", ok, joined[:50])
 
 
 def test_stream(ser):
