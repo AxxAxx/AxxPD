@@ -95,7 +95,8 @@ AxxPD exposes both interactive shortcuts and full SCPI over USB-CDC (115200 baud
 | `stream on [hz]` / `off` | CSV telemetry (default 20 Hz, up to 1 kHz) |
 | `protect ocp\|ovp <val>` / `status` / `clear` | Protection control |
 | `seq add <V> <ms>` / `run` / `stop` | Voltage sequencing |
-| `selftest` · `reboot` · `dfu` | Self-test · reboot · enter DFU |
+| `selftest` · `reboot` | Self-test · reboot |
+| `fwup` · `dfu` | Enter custom bootloader (web updater) · enter ROM DFU |
 
 ## Testing
 
@@ -110,12 +111,13 @@ python Tools/axxpd_selftest_full.py  # full standalone feature test (colour repo
 
 ## Firmware Update
 
-The application runs directly from flash at `0x08000000` (no custom bootloader).
+A small custom bootloader lives at `0x08000000`; the application runs from `0x08006000` behind it. Three ways to update, easiest first:
 
-- **USB DFU** — enter the STM32 ROM bootloader (hold the boot button while applying power, or send `dfu` over serial), then flash the `.bin` at `0x08000000` with [STM32CubeProgrammer](https://www.st.com/en/development-tools/stm32cubeprog.html) or `dfu-util`. A USB-A source keeps VBUS up in ROM DFU.
-- **SWD** — connect an ST-Link to the SWD pads and flash `AxxPD.bin`:
+- **Web dashboard (recommended)** — open `Tools/AxxPD_Dashboard.html` in Chrome/Edge, connect, expand **Firmware Update**, and drop a released `AxxPD.bin`. The dashboard reboots the device into the bootloader over USB and flashes it — no button holding, no extra tools. It validates the image header/CRC before touching the device, and a failed transfer leaves the device waiting safely in update mode for a retry.
+- **USB DFU** — for recovery, hold the boot button while applying power (or send `dfu` over serial) to enter the STM32 ROM bootloader, then flash with [STM32CubeProgrammer](https://www.st.com/en/development-tools/stm32cubeprog.html) or `dfu-util`. Write the bootloader at `0x08000000` and the app at `0x08006000`.
+- **SWD** — connect an ST-Link to the SWD pads and flash both images:
   ```
-  STM32_Programmer_CLI -c port=SWD mode=UR reset=HWrst -w AxxPD.bin 0x08000000 -v -rst
+  STM32_Programmer_CLI -c port=SWD mode=UR reset=HWrst -w AxxPD_boot.bin 0x08000000 -w AxxPD.bin 0x08006000 -v -rst
   ```
 
 ## Building

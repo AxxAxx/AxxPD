@@ -1,8 +1,10 @@
 # AxxPD — Project Guide & Handover
 
 USB-C PD 3.1 EPR bench power controller. STM32G491CCU6 (Cortex-M4F, 128 MHz).
-Firmware is **bootloader-less**: app linked at `0x08000000`. Firmware update = hold a
-button at power-on to enter the STM32 ROM DFU, flash over USB (or SWD).
+A small custom bootloader lives at `0x08000000`; the **app is linked at `0x08006000`**
+behind it (see `Firmware/bootloader/bl_layout.h`). `make all` builds both `AxxPD_boot.bin`
+and the header-patched `AxxPD.bin`. Firmware update = the web dashboard's Firmware Update
+panel (`fwup` reboots into the bootloader, USB upload), or ROM DFU / SWD for recovery.
 
 ---
 
@@ -60,8 +62,12 @@ The Makefile now tracks header deps (`-MMD`), so incremental builds are reliable
 ## Flash (SWD via ST-Link)
 ```
 CLI: C:\ST\STM32CubeIDE_1.14.0\STM32CubeIDE\plugins\com.st.stm32cube.ide.mcu.externaltools.cubeprogrammer.win32_2.2.400.202601091506\tools\bin\STM32_Programmer_CLI.exe
-STM32_Programmer_CLI -c port=SWD mode=UR reset=HWrst -d build/AxxPD.hex -v --start
+# Full chip (bootloader + app): flash both binaries at their bases.
+STM32_Programmer_CLI -c port=SWD mode=UR reset=HWrst -w build/AxxPD_boot.bin 0x08000000 -w build/AxxPD.bin 0x08006000 -v --start
+# App-only iteration (bootloader already on-chip): AxxPD.bin at 0x08006000.
 ```
+- The build patches `AxxPD.bin`'s header (size + CRC) so the bootloader accepts it; a raw
+  `.bin` flashed at 0x08006000 without the patch still boots (dev images skip the CRC gate).
 - **Erase fails on the 1st attempt, succeeds on retry** — loop the command 2–3×.
 - `mode=UR` (connect-under-reset) is required. Read regs with `-r32 <addr> <bytes>` /
   `-coreReg PC`. Reset flags at RCC_CSR `0x40021094`.

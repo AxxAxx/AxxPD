@@ -41,15 +41,15 @@ _estack = ORIGIN(RAM) + LENGTH(RAM); /* end of "RAM" Ram type memory */
 _Min_Heap_Size = 0x200; /* required amount of heap */
 _Min_Stack_Size = 0x400; /* required amount of stack */
 
-/* Memories definition */
+/* Memories definition.
+ * FLASH: application region only — the first 24 KB belong to the bootloader
+ * and the last page (0x0803F800) to settings. See bootloader/bl_layout.h.
+ * RAM: the last 16 bytes are the bootloader-request mailbox (BL_REQ_ADDR),
+ * excluded so startup code never zeroes it. */
 MEMORY
 {
-  RAM    (xrw)    : ORIGIN = 0x20000000,   LENGTH = 112K
-  /* [FIX 2026-08-01] LENGTH reduced 256K -> 254K (0x3F800): the last 2KB flash
-     page at 0x0803F800 (bank 1, page 127) is reserved for settings storage
-     (see SETTINGS_FLASH_ADDR in Core/Src/settings.c). This prevents the linker
-     from placing code/rodata into the settings page. */
-  FLASH    (rx)    : ORIGIN = 0x8000000,   LENGTH = 254K
+  RAM    (xrw)    : ORIGIN = 0x20000000,   LENGTH = 112K - 16
+  FLASH    (rx)    : ORIGIN = 0x8006000,   LENGTH = 230K
 }
 
 /* Sections */
@@ -62,6 +62,15 @@ SECTIONS
     . = ALIGN(4);
     KEEP(*(.isr_vector)) /* Startup code */
     . = ALIGN(4);
+  } >FLASH
+
+  /* Application header at a fixed offset right after the vector table —
+   * the bootloader validates magic/size/CRC here before jumping. The
+   * size/crc fields are patched post-build by tools/patch_app_header.py.
+   * A link error here means the vector table grew past 0x200. */
+  .app_header ORIGIN(FLASH) + 0x200 :
+  {
+    KEEP(*(.app_header))
   } >FLASH
 
   /* The program code and other data into "FLASH" Rom type memory */

@@ -36,6 +36,7 @@ extern "C" {
 #include "stm32g4xx_hal.h"
 #include "stm32g4xx_ll_ucpd.h"
 #include "main.h"   /* BLEED_CTRL pin — selftest tracks VBUS down-steps */
+#include "bl_layout.h"  /* BL_REQ_ADDR / BL_REQ_MAGIC — fwup bootloader mailbox */
 
 #include <cstdio>
 #include <cstring>
@@ -537,8 +538,11 @@ static const char* HELP_TEXT =
     "             have a load on VBUS during the run (rail jumps to all PDO\r\n"
     "             voltages in sequence).\r\n"
     "  reboot     full MCU reset (NVIC). Returns to fresh boot state.\r\n"
-    "  dfu        jump to STM32 system memory bootloader (USB DFU / USART1).\r\n"
-    "             Use STM32CubeProgrammer or dfu-util to flash new firmware.\r\n"
+    "  fwup       reboot into the AxxPD bootloader and flash new firmware from\r\n"
+    "             the web dashboard (USB-C power stays up). Power-cycle to\r\n"
+    "             abort. Aliases: fwupd, bootloader\r\n"
+    "  dfu        jump to the STM32 ROM bootloader (USB DFU / USART1) for\r\n"
+    "             STM32CubeProgrammer or dfu-util.\r\n"
     "             Power-cycle or reset to return to AxxPD.\r\n"
     "\r\n"
     "-- Request a voltage ---------------------------------------------------\r\n"
@@ -656,6 +660,70 @@ static void do_dfu() {
     __enable_irq();
     reset_handler();
     while (1) {}     // unreachable
+}
+
+// fwup — reboot into the custom AxxPD bootloader for a dashboard-driven
+// firmware update over USB CDC. Unlike do_dfu() (STM32 ROM DFU, which needs
+// STM32CubeProgrammer/dfu-util), this hands off to our own bootloader at
+// 0x08000000 that the WebSerial dashboard talks to. VBUS must stay up through
+// the reset, so we first step down from any EPR contract to 5 V SPR — the
+// bootloader has no PD stack, and a source drops an EPR rail ~1 s after reset.
+// The dashboard waits for the +FWUP/-FWUP verdict before tearing down the
+// port, so it is printed only once entry is certain. SCPI alias: :SYST:FWUP.
+static void do_fwup() {
+    if (g_output_enabled) {
+        Output_Disable();
+        g_output_enabled = 0;
+    }
+
+    user_wants_epr = false;   // cli_poll re-pins EPR_AUTO_ENTER_DISABLED
+    if (s_dpm && axxpd_get_negotiated_v() > 5.5f) {
+        target_mv = 5000; target_ma = 0;
+        s_dpm->trigger_any(5000, 0);
+        uint32_t t0 = HAL_GetTick();
+        while ((uint32_t)(HAL_GetTick() - t0) < 12000U) {
+            IWDG->KR = 0xAAAAU;
+            axxpd_run();
+            if ((s_pe == nullptr || !s_pe->is_in_epr_mode()) &&
+                axxpd_get_negotiated_v() <= 5.5f) {
+                break;
+            }
+        }
+        if ((s_pe != nullptr && s_pe->is_in_epr_mode()) ||
+            axxpd_get_negotiated_v() > 5.5f) {
+            out("-FWUP could not reach a 5V contract - try again (or replug "
+                "the charger and run fwup before entering EPR)\r\n");
+            return;
+        }
+    }
+
+    out("+FWUP entering bootloader - use the dashboard firmware updater\r\n");
+    out("power-cycle the device to return to the app without updating\r\n");
+
+    Settings_ProcessDeferred();
+
+    // On-screen notice (persists on the panel through the reset).
+    {
+        #define FW_C(r,g,b) (uint16_t)((((r) & 0xF8) << 8) | (((g) & 0xFC) << 3) | (((b) & 0xF8) >> 3))
+        uint16_t bg = FW_C(20, 20, 40), fg = FW_C(255, 255, 255);
+        uint16_t ac = FW_C(255, 234, 0);
+        LCD_Fill(0, 0, 319, 171, bg);
+        LCD_PutStr(60, 40, (const char*)"FIRMWARE UPDATE MODE", FONT_arial_17X18, ac, bg);
+        LCD_PutStr(30, 75, (const char*)"Flash from the web dashboard", FONT_arial_17X18, fg, bg);
+        LCD_PutStr(30, 100, (const char*)"Power-cycle to abort", FONT_arial_17X18, fg, bg);
+        #undef FW_C
+    }
+
+    HAL_Delay(50);   // let the CDC ack drain to the host
+
+    // Arm the bootloader-request mailbox (magic + complement — survives
+    // NVIC_SystemReset, cleared by the bootloader on every boot).
+    volatile uint32_t *req = (volatile uint32_t *)BL_REQ_ADDR;
+    req[0] = BL_REQ_MAGIC;
+    req[1] = ~BL_REQ_MAGIC;
+    __DSB();
+
+    NVIC_SystemReset();
 }
 
 // -----------------------------------------------------------------------------
@@ -2279,9 +2347,16 @@ static bool try_shortcut(char* line) {
     // reboot — full MCU reset
     if (match1(cmd, "REBOOT")) { do_reboot(); return true; }
 
-    // dfu — jump to STM32 system memory bootloader
-    if (match1(cmd, "DFU") || match1(cmd, "FWUPD") || match1(cmd, "BOOTLOADER")) {
+    // dfu — jump to the STM32 ROM (system memory) bootloader for
+    // STM32CubeProgrammer / dfu-util.
+    if (match1(cmd, "DFU")) {
         do_dfu();
+        return true;
+    }
+    // fwup — reboot into the custom AxxPD bootloader for the web dashboard
+    // firmware updater (USB-C power stays up).
+    if (match1(cmd, "FWUP") || match1(cmd, "FWUPD") || match1(cmd, "BOOTLOADER")) {
+        do_fwup();
         return true;
     }
 
@@ -2745,6 +2820,7 @@ static void dispatch_one(char* line) {
         if (np >= 2 && match(parts[1], "TRAC", "TRACE"))         { do_syst_trace(arg, query); return; }
         if (np >= 2 && match(parts[1], "REB", "REBOOT") && !query) { do_reboot(); return; }
         if (np >= 2 && match(parts[1], "DFU", "DFU") && !query)  { do_dfu(); return; }
+        if (np >= 2 && match(parts[1], "FWUP", "FWUP") && !query) { do_fwup(); return; }
         if (np >= 2 && match(parts[1], "TEST", "TEST") && !query) { do_selftest(); return; }
         if (np >= 2 && match(parts[1], "LOCK", "LOCK")) {
             if (query) {

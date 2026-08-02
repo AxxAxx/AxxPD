@@ -92,6 +92,24 @@
   .term-prompt{color:var(--accent);font-family:var(--mono);font-size:.85rem;padding:0 2px;user-select:none}
   .term-input input{flex:1}
 
+  /* ── Firmware update panel ──────────────────────── */
+  .fw-panel{flex-shrink:0}
+  .fw-panel .panel-header{margin-bottom:0;cursor:pointer;user-select:none}
+  .fw-panel .panel-header:hover .panel-title{color:var(--accent)}
+  .fw-chevron{display:inline-block;margin-left:4px;transition:transform .15s}
+  .fw-chevron.open{transform:rotate(90deg)}
+  .fw-status{font-size:.75rem;color:var(--muted);font-family:var(--mono)}
+  .fw-body{display:flex;flex-direction:column;gap:10px;margin-top:12px}
+  .fw-drop{border:1px dashed var(--panel-border);border-radius:4px;padding:14px;text-align:center;color:var(--muted);font-family:var(--mono);font-size:.8rem;cursor:pointer;transition:border-color .15s,background .15s}
+  .fw-drop:hover,.fw-drop.drag{border-color:var(--accent);background:#4a9eff11}
+  .fw-row{display:flex;gap:8px;align-items:center;flex-wrap:wrap}
+  .fw-progress{flex:1;min-width:120px;height:8px;background:var(--deep);border:1px solid var(--panel-border);border-radius:4px;overflow:hidden}
+  .fw-bar{height:100%;width:0;background:var(--accent);transition:width .2s}
+  .fw-pct{font-size:.75rem;color:var(--muted);font-family:var(--mono);min-width:36px;text-align:right}
+  .fw-phase{font-size:.8rem;color:var(--txt);font-family:var(--mono);line-height:1.4}
+  .fw-log{display:none;max-height:90px;overflow-y:auto;background:var(--deep);border-radius:4px;padding:6px 8px;font-size:.72rem;font-family:var(--mono);color:var(--muted);line-height:1.5}
+  .fw-log .err{color:var(--red)}
+
   /* ── No serial overlay ──────────────────────────── */
   .no-serial{position:fixed;inset:0;background:var(--bg);display:flex;align-items:center;justify-content:center;flex-direction:column;gap:12px;z-index:999}
   .no-serial h2{color:var(--accent);font-family:var(--sans)}
@@ -192,6 +210,29 @@
       <button onclick="sendCmd()">Send</button>
     </div>
   </div>
+
+  <!-- Firmware update -->
+  <div class="panel fw-panel">
+    <div class="panel-header" onclick="fwToggle()">
+      <span class="panel-title">Firmware Update <span class="fw-chevron" id="fwChevron">&#9656;</span></span>
+      <span class="fw-status" id="fwStatus"></span>
+    </div>
+    <div class="fw-body" id="fwBody" style="display:none">
+      <div class="fw-drop" id="fwDrop">
+        <span id="fwDropText">Drop a firmware .bin here or click to browse</span>
+      </div>
+      <input type="file" id="fwFile" accept=".bin" style="display:none" onchange="fwFileChosen(this.files)">
+      <div class="fw-row">
+        <button class="primary" id="fwFlashBtn" onclick="fwFlash()" disabled>Flash</button>
+        <button id="fwRetryBtn" onclick="fwRetry()" style="display:none">Retry</button>
+        <button class="danger" id="fwCancelBtn" onclick="fwCancel()" style="display:none">Cancel</button>
+        <div class="fw-progress"><div class="fw-bar" id="fwBar"></div></div>
+        <span class="fw-pct" id="fwPct"></span>
+      </div>
+      <div class="fw-phase" id="fwPhase">Select a firmware .bin to begin. The device must be connected.</div>
+      <div class="fw-log" id="fwLog"></div>
+    </div>
+  </div>
 </div>
 
 <div class="no-serial" id="noSerialMsg" style="display:none">
@@ -250,6 +291,7 @@ if (!('serial' in navigator)) {
 
 /* ── Connection ────────────────────────────────────────────── */
 async function toggleConnect() {
+  if (updaterActive) return; // the firmware updater owns the port
   if (connected) { await disconnect(); return; }
   try {
     port = await navigator.serial.requestPort();
@@ -305,7 +347,8 @@ async function readLoop() {
   // Clean up read pipe
   try { if (readPipe) await readPipe; } catch {}
   reader = null;
-  if (connected) {
+  // The firmware updater owns teardown/reconnect while active — stay out of it.
+  if (connected && !updaterActive) {
     setConnected(false);
     attemptReconnect();
   }
@@ -320,6 +363,8 @@ function processIncoming(chunk) {
     if (!line) continue;
     if (lastSentCmd && line === lastSentCmd) { lastSentCmd = ''; continue; }
     if (line.startsWith('> ')) continue;
+    // Firmware updater: capture the device's verdict on the fwup command.
+    if (line.startsWith('+FWUP') || line.startsWith('-FWUP')) fwFwupVerdict = line;
     if (line.startsWith('#S ')) {
       parseStream(line);
       continue;
@@ -611,6 +656,7 @@ drawChart = function() {
 
 /* ── Reconnect ─────────────────────────────────────────────── */
 async function attemptReconnect() {
+  if (updaterActive) return; // the firmware updater owns the port
   if (!port) return; // Clean disconnect, no reconnect
   for (let attempt = 0; attempt < 10; attempt++) {
     await new Promise(r => setTimeout(r, 2000));
@@ -703,6 +749,7 @@ function handleCmdKey(e) {
 }
 
 function sendCmd() {
+  if (updaterActive) { logErr('Console disabled during firmware update'); return; }
   const cmd = $cmd.value.trim();
   if (!cmd) return;
   if (cmdHistory[cmdHistory.length - 1] !== cmd) cmdHistory.push(cmd);
@@ -730,6 +777,471 @@ function appendLog(cls, msg) {
   if (termAutoScroll) $log.scrollTop = $log.scrollHeight;
 }
 function clearTerminal() { $log.innerHTML = ''; }
+
+/* ── Firmware update ───────────────────────────────────────── */
+// Talks the bootloader's line-based upload protocol over the same CDC port.
+// While updaterActive is set, the normal dashboard I/O (read loop restart,
+// auto-reconnect, console) is paused; the updater owns the port exclusively.
+let updaterActive = false;    // dashboard I/O paused, updater owns the port
+let fwUpdating = false;       // an update session is actively running
+let fwCancelRequested = false;
+let fwFwupVerdict = null;     // '+FWUP...'/'-FWUP...' captured by processIncoming()
+let fwFileInfo = null;        // { bytes, size, crc, version, name }
+let fwStep = '';              // current step, for failure messages
+let blReader = null, blWriter = null, blReadDone = null, blReadErr = null;
+let blLineQueue = [], blLineWaiter = null;
+const fwEnc = new TextEncoder();
+const FW_MAX_SIZE = 235520;   // bootloader app-region cap (also checked vs HELLO appmax)
+const FW_MIN_SIZE = 0x220;    // must at least contain the app header
+
+const $fwChevron = document.getElementById('fwChevron');
+const $fwStatus = document.getElementById('fwStatus');
+const $fwBody = document.getElementById('fwBody');
+const $fwDrop = document.getElementById('fwDrop');
+const $fwDropText = document.getElementById('fwDropText');
+const $fwFile = document.getElementById('fwFile');
+const $fwFlashBtn = document.getElementById('fwFlashBtn');
+const $fwRetryBtn = document.getElementById('fwRetryBtn');
+const $fwCancelBtn = document.getElementById('fwCancelBtn');
+const $fwBar = document.getElementById('fwBar');
+const $fwPct = document.getElementById('fwPct');
+const $fwPhase = document.getElementById('fwPhase');
+const $fwLog = document.getElementById('fwLog');
+
+/* zlib CRC32 (reflected, init 0xFFFFFFFF, final xor 0xFFFFFFFF) */
+const CRC32_TABLE = (() => {
+  const t = new Uint32Array(256);
+  for (let n = 0; n < 256; n++) {
+    let c = n;
+    for (let k = 0; k < 8; k++) c = (c & 1) ? (0xEDB88320 ^ (c >>> 1)) : (c >>> 1);
+    t[n] = c >>> 0;
+  }
+  return t;
+})();
+
+function crc32(bytes) {
+  let c = 0xFFFFFFFF;
+  for (let k = 0; k < bytes.length; k++) c = CRC32_TABLE[(c ^ bytes[k]) & 0xFF] ^ (c >>> 8);
+  return (c ^ 0xFFFFFFFF) >>> 0;
+}
+
+function hex8(x) { return (x >>> 0).toString(16).padStart(8, '0'); }
+function fwSleep(ms) { return new Promise(r => setTimeout(r, ms)); }
+
+/* ── Updater UI helpers ───────────────────────────────────── */
+function fwToggle() {
+  const open = $fwBody.style.display === 'none';
+  $fwBody.style.display = open ? '' : 'none';
+  $fwChevron.classList.toggle('open', open);
+}
+
+function fwSetPhase(text, pct) {
+  $fwPhase.textContent = text;
+  if (pct !== null && pct !== undefined) {
+    $fwBar.style.width = pct + '%';
+    $fwPct.textContent = pct > 0 ? Math.round(pct) + '%' : '';
+  }
+}
+
+function fwLog(msg, isErr) {
+  $fwLog.style.display = 'block';
+  const div = document.createElement('div');
+  if (isErr) div.className = 'err';
+  div.textContent = msg;
+  $fwLog.appendChild(div);
+  while ($fwLog.childElementCount > 100) $fwLog.removeChild($fwLog.firstChild);
+  $fwLog.scrollTop = $fwLog.scrollHeight;
+}
+
+function fwUpdateButtons() {
+  $fwFlashBtn.disabled = !(connected && fwFileInfo && !fwUpdating && !updaterActive);
+  $btn.disabled = fwUpdating || updaterActive;
+  $cmd.disabled = updaterActive;
+}
+
+function fwUiBusy(busy) {
+  $fwRetryBtn.style.display = 'none';
+  $fwCancelBtn.style.display = busy ? '' : 'none';
+  fwUpdateButtons();
+}
+
+/* ── File selection + validation ──────────────────────────── */
+$fwDrop.addEventListener('click', () => { if (!fwUpdating) $fwFile.click(); });
+$fwDrop.addEventListener('dragover', e => { e.preventDefault(); if (!fwUpdating) $fwDrop.classList.add('drag'); });
+$fwDrop.addEventListener('dragleave', () => $fwDrop.classList.remove('drag'));
+$fwDrop.addEventListener('drop', e => {
+  e.preventDefault();
+  $fwDrop.classList.remove('drag');
+  if (!fwUpdating && e.dataTransfer.files.length) fwLoadFile(e.dataTransfer.files[0]);
+});
+
+function fwFileChosen(files) {
+  if (files && files[0]) fwLoadFile(files[0]);
+  $fwFile.value = ''; // allow re-selecting the same file
+}
+
+async function fwLoadFile(file) {
+  if (fwUpdating) return;
+  fwFileInfo = null;
+  try {
+    const buf = await file.arrayBuffer();
+    const info = fwValidate(new Uint8Array(buf));
+    info.name = file.name;
+    fwFileInfo = info;
+    $fwDropText.textContent = file.name;
+    $fwStatus.textContent = info.version + ' ready';
+    fwSetPhase('AxxPD firmware ' + info.version + ', ' + Math.round(info.size / 1024) + ' KB — ready to flash.', 0);
+  } catch (e) {
+    $fwDropText.textContent = 'Drop a firmware .bin here or click to browse';
+    $fwStatus.textContent = '';
+    fwSetPhase('Invalid file: ' + e.message, 0);
+    fwLog(file.name + ': ' + e.message, true);
+  }
+  fwUpdateButtons();
+}
+
+function fwValidate(bytes) {
+  const len = bytes.length;
+  if (len >= 4 && bytes[0] === 0x7F && bytes[1] === 0x45 && bytes[2] === 0x4C && bytes[3] === 0x46)
+    throw new Error('this is an ELF file — select the .bin, not the .elf');
+  if (len < FW_MIN_SIZE) throw new Error('file too small (' + len + ' bytes) — not a valid AxxPD image');
+  if (len > FW_MAX_SIZE) throw new Error('file too large (' + len + ' bytes, max ' + FW_MAX_SIZE + ')');
+  if (len % 8 !== 0) throw new Error('file length is not a multiple of 8');
+  const dv = new DataView(bytes.buffer, bytes.byteOffset, len);
+  if (dv.getUint32(0x200, true) !== 0x50585841) // "AXXP"
+    throw new Error('bad header magic at 0x200 — not an AxxPD firmware image');
+  const hdrVer = dv.getUint32(0x204, true);
+  if (hdrVer !== 1) throw new Error('unsupported header version ' + hdrVer);
+  const imgSize = dv.getUint32(0x208, true);
+  if (imgSize !== len) throw new Error('header image_size (' + imgSize + ') does not match file length (' + len + ')');
+  const imgCrc = dv.getUint32(0x20C, true) >>> 0;
+  if (imgCrc === 0xFFFFFFFF) throw new Error('image_crc is 0xFFFFFFFF — this .bin was built without the header patch step');
+  const tmp = new Uint8Array(bytes); // copy, then zero the CRC field for computation
+  tmp[0x20C] = 0; tmp[0x20D] = 0; tmp[0x20E] = 0; tmp[0x20F] = 0;
+  const calc = crc32(tmp);
+  if (calc !== imgCrc) throw new Error('CRC mismatch (header ' + hex8(imgCrc) + ', computed ' + hex8(calc) + ') — corrupt file?');
+  let ver = '';
+  for (let k = 0x210; k < 0x220; k++) { if (bytes[k] === 0) break; ver += String.fromCharCode(bytes[k]); }
+  if (!ver) ver = '(unknown version)';
+  else if (!/^v/i.test(ver)) ver = 'v' + ver;
+  return { bytes, size: len, crc: imgCrc, version: ver };
+}
+
+/* ── Updater serial I/O (raw, line-based — bootloader is ASCII-only) ── */
+async function fwFindPort(timeoutMs) {
+  const deadline = Date.now() + timeoutMs;
+  let lastErr = 'no permitted serial port present';
+  while (Date.now() < deadline) {
+    if (fwCancelRequested) throw new Error('cancelled');
+    try {
+      const ports = await navigator.serial.getPorts();
+      // Match the AxxPD VID/PID; fall back to an unmatched port only when it
+      // is the sole permitted one (never spray HELLO at unrelated devices).
+      const cand = ports.find(p => {
+        const i = p.getInfo();
+        return i.usbVendorId === 0x0483 && i.usbProductId === 0x5740;
+      }) || (ports.length === 1 ? ports[0] : undefined);
+      if (cand) {
+        try { await cand.open({ baudRate: 115200 }); return cand; }
+        catch (e) {
+          // A stale handle from before the reset can linger as "already open"
+          if (/already open/i.test(e.message)) { try { await cand.close(); } catch {} }
+          lastErr = e.message;
+        }
+      }
+    } catch (e) { lastErr = e.message; } // not enumerated yet — retry
+    await fwSleep(500);
+  }
+  throw new Error('device did not reappear within ' + Math.round(timeoutMs / 1000) + ' s (' + lastErr + ')');
+}
+
+async function fwOpenBlPort() {
+  port = await fwFindPort(20000);
+  blLineQueue = [];
+  blReadErr = null;
+  blWriter = port.writable.getWriter();
+  blReadDone = fwBlReadLoop();
+}
+
+async function fwBlReadLoop() {
+  const dec = new TextDecoder();
+  let buf = '';
+  try {
+    blReader = port.readable.getReader();
+    while (true) {
+      const { value, done } = await blReader.read();
+      if (done) break;
+      buf += dec.decode(value, { stream: true });
+      const lines = buf.split('\n');
+      buf = lines.pop() || '';
+      for (const raw of lines) {
+        const line = raw.replace(/\r/g, '').trim();
+        if (!line) continue;
+        blLineQueue.push(line);
+        if (blLineWaiter) blLineWaiter();
+      }
+    }
+  } catch (e) {
+    blReadErr = 'connection lost: ' + (e.message || 'read error');
+  }
+  if (!blReadErr) blReadErr = 'port closed';
+  if (blLineWaiter) blLineWaiter();
+}
+
+async function fwReadLine(timeoutMs) {
+  const deadline = Date.now() + timeoutMs;
+  while (blLineQueue.length === 0) {
+    if (blReadErr) throw new Error(blReadErr);
+    const rem = deadline - Date.now();
+    if (rem <= 0) throw new Error('timeout');
+    await new Promise(res => {
+      const t = setTimeout(res, Math.min(rem, 200));
+      blLineWaiter = () => { clearTimeout(t); res(); };
+    });
+    blLineWaiter = null;
+  }
+  return blLineQueue.shift();
+}
+
+// Wait for a line matching `ok` (exact or "<ok> ..."). Lines starting with
+// '-' are protocol errors and throw. onExtra() may consume progress lines.
+async function fwExpect(ok, timeoutMs, onExtra) {
+  const deadline = Date.now() + timeoutMs;
+  while (true) {
+    const rem = deadline - Date.now();
+    if (rem <= 0) throw new Error('timeout waiting for ' + ok);
+    let line;
+    try { line = await fwReadLine(rem); }
+    catch (e) { throw new Error(e.message === 'timeout' ? 'timeout waiting for ' + ok : e.message); }
+    if (line === ok || line.startsWith(ok + ' ')) return line;
+    if (line.startsWith('-')) throw new Error('device replied: ' + line);
+    if (onExtra && onExtra(line)) continue;
+    fwLog('unexpected: ' + line, false);
+  }
+}
+
+async function blSend(cmd) { await blWriter.write(fwEnc.encode(cmd + '\n')); }
+async function fwCommand(cmd, ok, timeoutMs) { await blSend(cmd); return fwExpect(ok, timeoutMs); }
+
+async function fwHello() {
+  for (let attempt = 1; attempt <= 5; attempt++) {
+    if (fwCancelRequested) throw new Error('cancelled');
+    try {
+      await blSend('HELLO');
+      const line = await fwExpect('+HELLO', 1000); // +HELLO AxxPD-BL 1 <appmax> <chunksize>
+      const parts = line.split(/\s+/);
+      const appmax = parseInt(parts[3], 10);
+      const chunk = parseInt(parts[4], 10);
+      if (!(appmax > 0) || !(chunk > 0)) throw new Error('malformed HELLO reply: ' + line);
+      return { appmax, chunk };
+    } catch (e) {
+      if (attempt === 5) throw new Error('bootloader handshake failed: ' + e.message);
+      fwLog('HELLO attempt ' + attempt + ': ' + e.message, true);
+      await fwSleep(1000);
+    }
+  }
+}
+
+/* ── Port teardown ─────────────────────────────────────────── */
+// Close the app-mode port (normal dashboard streams). Mirrors disconnect()
+// but tolerates the port already being dead after the fwup reset.
+async function fwCloseAppPort() {
+  connected = false;
+  try { if (reader) { await reader.cancel(); } } catch {}
+  reader = null;
+  try { if (writer) { await writer.abort(); } } catch {}
+  writer = null;
+  try { if (pipePromise) { await pipePromise; } } catch {}
+  pipePromise = null;
+  writerReady = null;
+  try { if (port) await port.close(); }
+  catch { // pipes may still be unwinding; give them a beat and retry once
+    await fwSleep(200);
+    try { if (port) await port.close(); } catch {}
+  }
+  port = null;
+  setConnected(false);
+}
+
+async function fwCloseBlPort() {
+  try { if (blReader) { await blReader.cancel(); } } catch {}
+  try { if (blReader) blReader.releaseLock(); } catch {}
+  blReader = null;
+  try { if (blWriter) blWriter.releaseLock(); } catch {}
+  blWriter = null;
+  try { if (blReadDone) await blReadDone; } catch {}
+  blReadDone = null;
+  try { if (port) await port.close(); } catch {}
+  port = null;
+}
+
+/* ── Update flow ───────────────────────────────────────────── */
+async function fwFlash() {
+  if (!fwFileInfo || !connected || fwUpdating || updaterActive) return;
+  fwUpdating = true;
+  updaterActive = true;
+  fwCancelRequested = false;
+  fwUiBusy(true);
+  fwStep = 'reboot';
+  try {
+    fwSetPhase('Rebooting device into update mode...', 0);
+    fwFwupVerdict = null;
+    await sendLine('fwup');
+    // Wait for the device's verdict. The device first steps the contract
+    // down to 5 V SPR (EPR exit can take up to ~12 s) and only then replies:
+    // '+FWUP' and resets, or '-FWUP <reason>' and stays in the app.
+    fwSetPhase('Device is stepping down to 5 V...', 0);
+    const t0 = Date.now();
+    while (fwFwupVerdict === null && Date.now() - t0 < 20000) {
+      if (fwCancelRequested) throw new Error('cancelled');
+      if (!connected) break; // port died — device reset without us seeing +FWUP: proceed
+      await fwSleep(100);
+    }
+    if (fwFwupVerdict && fwFwupVerdict.startsWith('-FWUP')) {
+      throw new Error('device refused: ' + fwFwupVerdict.slice(1));
+    }
+    if (fwFwupVerdict === null && connected) {
+      throw new Error('no +FWUP reply from device (is the firmware too old for fwup?)');
+    }
+    await fwSleep(300); // device resets right after +FWUP
+    await fwCloseAppPort();
+    $stxt.textContent = 'Updating firmware';
+    await fwRunSession();
+  } catch (e) {
+    await fwFail(e);
+  }
+}
+
+async function fwRetry() {
+  if (!fwFileInfo || fwUpdating) return;
+  fwUpdating = true;
+  updaterActive = true;
+  fwCancelRequested = false;
+  fwUiBusy(true);
+  fwStep = 'reconnect';
+  try {
+    await fwCloseBlPort();  // in case a previous session left the port half-open
+    await fwCloseAppPort();
+    $stxt.textContent = 'Updating firmware';
+    await fwRunSession();   // device is already in bootloader — skip fwup
+  } catch (e) {
+    await fwFail(e);
+  }
+}
+
+async function fwRunSession() {
+  const fw = fwFileInfo;
+
+  fwStep = 'reconnect';
+  fwSetPhase('Waiting for device in update mode...', 0);
+  await fwOpenBlPort();
+
+  fwStep = 'handshake';
+  fwSetPhase('Contacting bootloader...', 0);
+  const bl = await fwHello();
+  fwLog('Bootloader: appmax=' + bl.appmax + ' chunksize=' + bl.chunk);
+  if (fw.size > bl.appmax) throw new Error('image (' + fw.size + ' B) exceeds device app region (' + bl.appmax + ' B)');
+
+  fwStep = 'start';
+  fwSetPhase('Starting upload...', 0);
+  await fwCommand('START ' + fw.size + ' ' + hex8(fw.crc), '+START', 5000);
+
+  fwStep = 'erase';
+  fwSetPhase('Erasing...', 0);
+  await blSend('ERASE');
+  await fwExpect('+ERASE', 30000, line => {
+    const m = line.match(/^\+ERASING (\d+)\/(\d+)/);
+    if (m) { fwSetPhase('Erasing... (' + m[1] + '/' + m[2] + ')', 100 * parseInt(m[1], 10) / parseInt(m[2], 10)); return true; }
+    return false;
+  });
+
+  fwStep = 'flash';
+  fwSetPhase('Flashing...', 0);
+  let off = 0;
+  for (let seq = 0; off < fw.size; seq++) {
+    if (fwCancelRequested) throw new Error('cancelled');
+    const len = Math.min(bl.chunk, fw.size - off);
+    const chunkBytes = fw.bytes.subarray(off, off + len);
+    const hdr = fwEnc.encode('DATA ' + seq + ' ' + len + ' ' + hex8(crc32(chunkBytes)) + '\n');
+    const pkt = new Uint8Array(hdr.length + len);
+    pkt.set(hdr, 0);
+    pkt.set(chunkBytes, hdr.length);
+    let acked = false;
+    for (let attempt = 0; attempt <= 3; attempt++) { // 1 try + 3 retries; duplicate ACKs are idempotent
+      await blWriter.write(pkt);
+      try { await fwExpect('+DATA ' + seq, 5000); acked = true; break; }
+      catch (e) {
+        if (fwCancelRequested) throw new Error('cancelled');
+        if (attempt < 3) fwLog('chunk ' + seq + ' attempt ' + (attempt + 1) + ': ' + e.message + ' — retrying', true);
+        else fwLog('chunk ' + seq + ' attempt 4: ' + e.message, true);
+      }
+    }
+    if (!acked) throw new Error('chunk ' + seq + ' not acknowledged after 4 attempts');
+    off += len;
+    fwSetPhase('Flashing... ' + Math.round(off / 1024) + ' / ' + Math.round(fw.size / 1024) + ' KB', 100 * off / fw.size);
+  }
+
+  fwStep = 'verify';
+  fwSetPhase('Verifying...', 100);
+  await fwCommand('VERIFY', '+VERIFY', 15000);
+
+  fwStep = 'boot';
+  fwSetPhase('Booting new firmware...', 100);
+  await fwCommand('BOOT', '+BOOT', 5000);
+  await fwCloseBlPort(); // device resets into the new app; port dies
+
+  fwStep = 'restart';
+  fwSetPhase('Waiting for device to restart...', 100);
+  port = await fwFindPort(20000);
+  try { await port.setSignals({ dataTerminalReady: true }); } catch {}
+
+  // Hand the port back to the normal dashboard machinery
+  updaterActive = false;
+  fwUpdating = false;
+  setConnected(true);
+  readLoop();
+  setTimeout(() => { sendLine('stream on'); refreshPdos(); sendLine('ct'); pendingCt = true; }, 300);
+  fwSetPhase('Update complete — now running ' + fw.version + '.', 100);
+  $fwStatus.textContent = fw.version + ' installed';
+  fwUiBusy(false);
+}
+
+async function fwFail(e) {
+  const cancelled = fwCancelRequested || (e && e.message === 'cancelled');
+  fwUpdating = false;
+  try { await fwCloseBlPort(); } catch {}
+  $stxt.textContent = 'Disconnected';
+  if (cancelled) {
+    updaterActive = false;
+    fwUiBusy(false);
+    $fwRetryBtn.style.display = '';
+    fwSetPhase('Update cancelled. Power-cycling returns the device to the previous firmware only if the app is still intact — after an interrupted flash it waits in update mode until a successful update. Click Retry to flash again.', null);
+    return;
+  }
+  fwLog(fwStep + ': ' + e.message, true);
+  fwSetPhase('Update failed at ' + fwStep + ': ' + e.message + ' — the device stays in update mode; click Retry.', null);
+  // Keep updaterActive set: the device is in bootloader mode, the normal
+  // dashboard cannot talk to it. Retry resumes; Cancel releases the UI.
+  fwUiBusy(false);
+  $fwRetryBtn.style.display = '';
+  $fwCancelBtn.style.display = '';
+  fwUpdateButtons();
+}
+
+async function fwCancel() {
+  if (fwUpdating) { // cancel a running session: flag it, the flow will abort
+    fwCancelRequested = true;
+    fwSetPhase('Cancelling...', null);
+    return;
+  }
+  // Cancel from the failed state: give up and release the dashboard UI
+  fwCancelRequested = true;
+  await fwCloseBlPort();
+  updaterActive = false;
+  fwUiBusy(false);
+  $fwRetryBtn.style.display = '';
+  fwSetPhase('Update abandoned. Power-cycling returns the device to the previous firmware only if the app is still intact — after an interrupted flash it waits in update mode until a successful update. Click Retry to flash again.', null);
+}
 </script>
 </body>
 </html>

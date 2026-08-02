@@ -164,7 +164,8 @@ When streaming is enabled, lines prefixed with `#S` are emitted at the configure
 |---------|-------------|
 | `selftest` (alias `test`) | Walk all advertised PDOs and report pass/fail per step |
 | `reboot` | Full MCU reset (NVIC) |
-| `dfu` (aliases `fwupd`, `bootloader`) | Jump to the STM32 ROM (system memory) DFU bootloader for firmware update over USB DFU / USART1. Power cycle or reset to return to AxxPD |
+| `fwup` (aliases `fwupd`, `bootloader`) | Step down to 5 V, then enter the custom AxxPD bootloader for a USB firmware update via the web dashboard. Replies `+FWUP` and resets, or `-FWUP <reason>` if it cannot reach a 5 V contract |
+| `dfu` | Jump to the STM32 ROM (system memory) DFU bootloader for recovery via USB DFU / USART1. Power cycle or reset to return to AxxPD |
 | `trace on\|off` | Enable/disable diagnostic prints ([CC]/[RX]/[TX]/[UCPD] + PE state trace / `#EVT PE_STATE`). `trace` alone queries the state |
 | `stat` | Dump UCPD ISR counters (TX ok/fail/requests, RX msgend/err/ovr/etc.) |
 
@@ -257,7 +258,8 @@ Standard Commands for Programmable Instruments. Use these for automated scriptin
 | `:SYST:EVEN?` | Query whether event notifications are enabled (`ON`/`OFF`) |
 | `:SYST:TRAC ON\|OFF` | Enable/disable diagnostic trace (query with `:SYST:TRAC?`) |
 | `:SYST:REB` | Reboot MCU |
-| `:SYST:DFU` | Enter the STM32 ROM DFU bootloader |
+| `:SYST:FWUP` | Enter the custom AxxPD bootloader (web dashboard update) |
+| `:SYST:DFU` | Enter the STM32 ROM DFU bootloader (recovery) |
 | `:SYST:TEST` | Run self-test (requires the same `OK` confirmation as `selftest`) |
 | `:SYST:LOCK ON\|OFF` | Lock/unlock UI |
 | `:SYST:LOCK?` | Query lock state (returns `1` or `0`) |
