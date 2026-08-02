@@ -47,7 +47,10 @@
 #define GRAPH_Y0        120   /* bottom edge of plot area (time labels below, navbar at 142) */
 #define GRAPH_WIDTH     240   /* plot width in px; right edge at x=280, before I-axis labels (x=285) */
 #define GRAPH_HEIGHT    54    /* plot height in px; top edge at y=66 */
-#define GRAPH_POINTS    100   /* rolling buffer length; window = 100 * interval_ms */
+#define GRAPH_POINTS    241   /* rolling buffer length — one sample per pixel
+                               * column, so the trace advances in 1 px steps.
+                               * (100 points gave 2.4 px lurches per sample —
+                               * visibly jerky.) window = 240 * interval_ms */
 
 #define I_AXIS_LABEL_X  285   /* right of graph + margin */
 
@@ -67,10 +70,13 @@
 /* ------------------------------------------------------------------ */
 
 #define COL_BG          RGB(0,   0,   0  )
-#define COL_GRID        LEGACY(48,  48,  48)
+/* Muted green grid — deliberate. This reproduces what the old LEGACY(48,48,48)
+ * define actually rendered (BRG+bswap made "dark grey" come out sage green),
+ * which Axel prefers over true grey. Do not "fix" back to grey. */
+#define COL_GRID        RGB(132, 198, 140)
 #define COL_AXIS_TIME   RGB(200, 200, 200)   /* light grey time labels (0s / 10s) */
 #define COL_V_TRACE     RGB(255, 234, 0)           /* yellow — matches dashboard V */
-#define COL_I_TRACE     RGB(240, 64,  5)           /* orange — matches dashboard A */
+#define COL_I_TRACE     RGB(255, 100, 40)          /* orange — matches dashboard A */
 #define COL_V_LABEL     COL_V_TRACE
 #define COL_I_LABEL     COL_I_TRACE
 
@@ -169,7 +175,7 @@ static void fb_draw_grid(void)
     const int cyc = DASH_LEN + DASH_GAP;
     /* Horizontal gridlines — dashes phased from the left edge. */
     for (int k = 0; k <= GRID_DIVS; k++) {
-        int gy = GRAPH_Y0 - k * (GRAPH_HEIGHT / GRID_DIVS);
+        int gy = GRAPH_Y0 - (k * GRAPH_HEIGHT) / GRID_DIVS;
         for (int x = GRAPH_X0; x <= GRAPH_X0 + GRAPH_WIDTH; x++)
             if (((x - GRAPH_X0) % cyc) < DASH_LEN) fb_px(x, gy, COL_GRID);
     }

@@ -647,16 +647,10 @@ static void UI_DrawGraph(INA228_Reading_t *r, float ntc_temp, uint8_t output_on)
     fmt_3sig(buf, sizeof(buf), r->current_a, "A", "  ");
     LCD_PutStr(DRAW_X + 155, CONTENT_Y, buf, FONT_MD, COL_CURRENT, COL_BG);
 
-    /* Graph trace is expensive (per-pixel Bresenham + grid restore).
-     * Throttled to ~15Hz (66ms) so it doesn't starve the main loop. */
-    {
-        static uint32_t last_graph_draw = 0;
-        uint32_t now = HAL_GetTick();
-        if (now - last_graph_draw >= 66U) {
-            last_graph_draw = now;
-            Graph_Draw();
-        }
-    }
+    /* Graph scrolling is blitted from the sample cadence in the main loop
+     * (beat-free 1 px steps). This call is a cheap no-op unless the grid/axes
+     * need a full redraw (screen entry or axis rescale). */
+    Graph_Draw();
 
     UI_DrawScreenIndicator();
 }

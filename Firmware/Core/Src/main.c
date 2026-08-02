@@ -921,17 +921,28 @@ int main(void)
               last_graph_sample_ms = now;
           }
           if (on_graph) {
-              /* window = 100 pts * interval; 5/10/30/60 s -> 50/100/300/600 ms */
+              /* window = 240 intervals (241 px columns); 5/10/30/60 s ->
+               * 21/42/125/250 ms. One pixel per sample. */
               uint32_t interval_ms;
               switch (Settings_GetGraphWindow()) {
-                  case 1:  interval_ms = 100; break;  /* 10s */
-                  case 2:  interval_ms = 300; break;  /* 30s */
-                  case 3:  interval_ms = 600; break;  /* 60s */
-                  default: interval_ms = 50;  break;  /* 5s */
+                  case 1:  interval_ms = 42;  break;  /* 10s */
+                  case 2:  interval_ms = 125; break;  /* 30s */
+                  case 3:  interval_ms = 250; break;  /* 60s */
+                  default: interval_ms = 21;  break;  /* 5s */
               }
               if ((now - last_graph_sample_ms) >= interval_ms) {
-                  last_graph_sample_ms = now;
+                  /* Advance by the interval (not to `now`) so loop lateness
+                   * doesn't stretch the window; resync if we fell >1 interval
+                   * behind (e.g. after a long redraw). */
+                  last_graph_sample_ms += interval_ms;
+                  if ((now - last_graph_sample_ms) >= interval_ms) {
+                      last_graph_sample_ms = now;
+                  }
                   Graph_AddSample(g_ina_reading.voltage_v, g_ina_reading.current_a);
+                  /* Blit NOW, in sample cadence — routing this through the 33 ms
+                   * UI tick beat against the sample interval (frame gaps
+                   * alternated 33/66 ms) and scrolled visibly jerky. */
+                  Graph_Draw();
               }
           }
           was_on_graph = on_graph;

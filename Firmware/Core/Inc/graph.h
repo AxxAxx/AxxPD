@@ -7,9 +7,10 @@
  * @file    graph.h
  * @brief   Live V/I plot for the GRAPH UI screen.
  *
- * Maintains a 100-sample rolling buffer of (voltage, current) pairs.
+ * Maintains a 241-sample rolling buffer (one per pixel column) of
+ * (voltage, current) pairs, so the trace scrolls in 1 px steps.
  * Sample interval is configurable via the graph_window setting:
- *   0=5s window (50ms/sample), 1=10s (100ms), 2=30s (300ms), 3=60s (600ms).
+ *   0=5s window (21ms/sample), 1=10s (42ms), 2=30s (125ms), 3=60s (250ms).
  * Renders a single grid with two Y-axes (V on the left, I on the right).
  * The V axis snaps to a nice maximum derived from the negotiated source
  * voltage; the I axis max is derived from the negotiated current.
@@ -26,7 +27,7 @@
 void Graph_Init(void);
 
 /** Push one (V, I) sample. Called from the main loop at the configured
- *  graph sample interval (50/100/300/600 ms depending on graph_window setting). */
+ *  graph sample interval (21/42/125/250 ms depending on graph_window setting). */
 void Graph_AddSample(float voltage_v, float current_a);
 
 /** Draw or refresh the plot region. Call from the GRAPH screen draw path
