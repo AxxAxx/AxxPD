@@ -15,15 +15,23 @@ all voltages (5/9/15/20/28 V EPR + PPS + AVS ranges), EPR mode entry, measuremen
 output on/off, protection config, and telemetry stream. **PD/EPR negotiation works.**
 Commits are on local `main`. `origin/main` (`357ae83`) is the prior baseline.
 
-### Pre-release bug hunt (2026-08-02, commit `666b190`) — NOT yet flashed/tested
-A last-chance 5-reviewer panel produced ~15 fixes across bootloader/PD/protection/UI/updater.
-Builds clean (app 197 KB / 86 %, boot 20 KB). **Must re-flash + re-run 53/53 and specifically
-regression-test: (1) EPR entry still works, (2) a no-load voltage DOWN-step no longer false-
-trips SW-OVP, (3) `fwup` from EPR, (4) the web-dashboard flash cycle.** Highlights: settings-
-page torn-DW brick recovery in the app NMI handler (`stm32g4xx_it.c` + `Settings_EraseSelf`);
-SW-OVP down-step reference hold (`main.c`); `req_transmit` RXMSGEND race guard; DPM trigger
-PRIMASK critical section; INA idle callback → `axxpd_tick_pd`; LCD DMA-timeout `HAL_SPI_Abort`;
-remote `on` refuses a latched fault (returns 3). See the honest deferral list in the handover.
+### Pre-release bug hunt (2026-08-02..03, `666b190`+`f134c01`) — FLASHED, 53/53 on hardware
+A last-chance 5-reviewer panel produced ~15 fixes across bootloader/PD/protection/UI/updater,
+plus an EPR-entry auto-retry. **Flashed and verified: full self-test 53/53** on a healthy
+charger (all voltages incl. 28 V EPR + AVS, PPS, protections, telemetry). Builds clean
+(app ~198 KB, boot 20 KB). Highlights: settings-page torn-DW brick recovery in the app NMI
+handler (`stm32g4xx_it.c` + `Settings_EraseSelf`); SW-OVP down-step reference hold (`main.c`);
+`req_transmit` RXMSGEND race guard; DPM trigger PRIMASK critical section; INA idle callback →
+`axxpd_tick_pd`; LCD DMA-timeout `HAL_SPI_Abort`; remote `on` refuses a latched fault (code 3);
+**EPR fast auto-retry** (`f134c01`): the first `EPR_Mode(Enter)` is often ignored by the source,
+so re-issue every 2 s up to 4× — makes `epr` reliable (was ~0-1/5 first-attempt).
+
+**EPR lesson (2026-08-03):** a "degenerate" EPR cap set (reduced currents, AVS 0-0, no 28 V)
+is the charger advertising a *shared/limited power budget* — e.g. a second sink on the same
+charger, or a charger needing a power-cycle. It is NOT a cable or firmware fault. Confirmed:
+after clearing the shared charger, the same cable gave full caps and 53/53. Do NOT add firmware
+that CC-resets on "missing EPR fixed PDOs" — a legitimately limited charger would loop (this
+was tried and reverted). Bench-power the AxxPD from a charger with no other devices attached.
 
 ### The "unfindable layout-sensitive bug" was a BUILD-SYSTEM artifact — RESOLVED
 For days the new firmware appeared to fault-loop on boot, and "any code change (even a
