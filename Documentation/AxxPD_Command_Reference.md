@@ -100,7 +100,7 @@ set 9V 2A               # auto-select with current limit
 
 | Command | Description | Notes |
 |---------|-------------|-------|
-| `epr` | Enter EPR mode | Resets target to 5V; use `setpdo`/`setavs` next |
+| `epr` | Enter EPR mode | Resets target to 5V; use `setpdo`/`setavs` next. Auto-retries entry (some sources ignore the first `EPR_Mode(Enter)`) |
 | `spr` | Leave EPR mode | PDO list shrinks back to 1-7 |
 | `rst` | Renegotiate to 5V PDO1 | Also disables the output. Stays in EPR if already entered. Not a hard reset -- unplug for full link reset |
 

@@ -26,6 +26,8 @@ Thumbs.db
 .DS_Store
 desktop.ini
 
-# Self-test reports
+# Self-test reports (written to CWD — Tools/ or repo root)
 Tools/axxpd_selftest_*.md
 Tools/axxpd_selftest_*.txt
+axxpd_selftest_*.md
+axxpd_selftest_*.txt
