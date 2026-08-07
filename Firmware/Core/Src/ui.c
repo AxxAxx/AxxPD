@@ -228,8 +228,10 @@ static uint16_t    flash_msg_color = COL_GREEN;
  * draw live readings over the half-erased red overlay. */
 static uint32_t    s_fault_acked_seq = 0;
 
-/* True while there is an active, unacknowledged hardware fault. */
-static inline uint8_t UI_FaultActive(void)
+/* True while there is an active, unacknowledged hardware fault. Public
+ * (declared in ui.h): the main loop's graph blit runs at sample cadence
+ * outside UI_Update and must not paint over the latched fault overlay. */
+uint8_t UI_FaultActive(void)
 {
     return (uint8_t)(g_hw_fault && (g_fault_seq != s_fault_acked_seq));
 }

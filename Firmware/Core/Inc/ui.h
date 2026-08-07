@@ -27,5 +27,6 @@ UIScreen_t UI_GetScreen(void);
 void UI_SetLocked(uint8_t locked);
 uint8_t UI_IsLocked(void);
 void UI_ToolTick(INA228_Reading_t *reading);  /* Call from main loop every iteration for tool state machines */
+uint8_t UI_FaultActive(void);  /* 1 while an unacknowledged hardware fault owns the screen (red overlay) */
 
 #endif /* __UI_H */

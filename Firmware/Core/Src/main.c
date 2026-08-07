@@ -1034,8 +1034,17 @@ int main(void)
                   Graph_AddSample(g_ina_reading.voltage_v, g_ina_reading.current_a);
                   /* Blit NOW, in sample cadence — routing this through the 33 ms
                    * UI tick beat against the sample interval (frame gaps
-                   * alternated 33/66 ms) and scrolled visibly jerky. */
-                  Graph_Draw();
+                   * alternated 33/66 ms) and scrolled visibly jerky.
+                   * NOT while the fault overlay owns the screen: this blit
+                   * bypasses UI_Update's overlay gating and would repaint the
+                   * plot (and, on a rescale, wipe the label gutters) right over
+                   * the red screen. Sampling above continues so the history —
+                   * including the fault transient — is intact on dismissal;
+                   * the dismiss path forces a full redraw via the screen-
+                   * transition logic (prev_screen reset -> Graph_InvalidateGrid). */
+                  if (!UI_FaultActive()) {
+                      Graph_Draw();
+                  }
               }
           }
           was_on_graph = on_graph;
