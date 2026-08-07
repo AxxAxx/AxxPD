@@ -164,7 +164,7 @@ When streaming is enabled, lines prefixed with `#S` are emitted at the configure
 |---------|-------------|
 | `selftest` (alias `test`) | Walk all advertised PDOs and report pass/fail per step |
 | `reboot` | Full MCU reset (NVIC) |
-| `fwup` (aliases `fwupd`, `bootloader`) | Step down to 5 V, then enter the custom AxxPD bootloader for a USB firmware update via the web dashboard. Replies `+FWUP` and resets, or `-FWUP <reason>` if it cannot reach a 5 V contract |
+| `fwup` (aliases `fwupd`, `bootloader`) | Step down to 5 V, then enter the custom AxxPD bootloader for a USB firmware update via the web dashboard or `Tools/axxpd_fwup.py`. Replies `+FWUP` and resets, or `-FWUP <reason>` if it cannot reach a 5 V contract. Once the sink has entered EPR mode it cannot step back out on its own (no sink-initiated EPR exit in the PD stack), so `fwup` refuses even at a 5 V contract — `reboot` first (or replug the charger); `axxpd_fwup.py` does this automatically |
 | `dfu` | Jump to the STM32 ROM (system memory) DFU bootloader for recovery via USB DFU / USART1. Power cycle or reset to return to AxxPD |
 | `trace on\|off` | Enable/disable diagnostic prints ([CC]/[RX]/[TX]/[UCPD] + PE state trace / `#EVT PE_STATE`). `trace` alone queries the state |
 | `stat` | Dump UCPD ISR counters (TX ok/fail/requests, RX msgend/err/ovr/etc.) |

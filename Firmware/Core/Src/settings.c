@@ -173,6 +173,7 @@ void Settings_LoadDefaults(void)
 
     /* Display — graph */
     settings.graph_window = 1;  /* 10s (default) */
+    settings.autoscale_current = 0;  /* NO — I-axis follows the charger max */
 
     /* Default preset: 5V / 3A */
     settings.presets[0].voltage_mv = 5000;
@@ -432,6 +433,7 @@ uint8_t Settings_GetBuzzerEnabled(void)   { return settings.buzzer_enabled;  }
 uint8_t Settings_GetStartupBeep(void)     { return settings.startup_beep;    }
 uint8_t Settings_GetTempFahrenheit(void)  { return settings.temp_fahrenheit; }
 uint8_t Settings_GetGraphWindow(void)    { return settings.graph_window; }
+uint8_t Settings_GetAutoscaleCurrent(void) { return settings.autoscale_current; }
 
 /** Whitelist of byte offsets that are genuine 1-byte boolean fields.
  *  Restricting Get/SetBool to these prevents a stray fi (e.g. an offset into a
@@ -447,6 +449,7 @@ static int settings_is_bool_offset(uint8_t fi)
     case offsetof(Settings_t, serial_terminal):
     case offsetof(Settings_t, splash_screen):
     case offsetof(Settings_t, temp_fahrenheit):
+    case offsetof(Settings_t, autoscale_current):
     case offsetof(Settings_t, buzzer_enabled):
     case offsetof(Settings_t, startup_beep):
         return 1;

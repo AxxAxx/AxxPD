@@ -73,7 +73,7 @@ Six screens, cycled with SELECT:
 
 1. **Dashboard** — large V/I/W readout; set voltage/current with live edit and CC/CV indication.
 2. **PDOs** — scrollable source capabilities incl. EPR AVS, plus cable e-marker info.
-3. **Graph** — rolling V/I plot, one sample per pixel for smooth scrolling; selectable 5/10/30/60 s window.
+3. **Graph** — rolling V/I plot, one sample per pixel for smooth scrolling; selectable 5/10/30/60 s window. Optional **autoscale current** (Settings > Display) zooms the current axis to 2× the load current (sampled 1 s after output-on) instead of the charger's maximum, so small loads stay readable.
 4. **Presets** — five named slots, stored in flash.
 5. **Energy** — session runtime, Wh/Ah, plus average and peak I/P (long-press SELECT resets).
 6. **Settings** — grouped menus: Mode, Display, Sound, Protection, Tools, Calibration, System.
@@ -114,6 +114,7 @@ python Tools/axxpd_selftest_full.py  # full standalone feature test (colour repo
 A small custom bootloader lives at `0x08000000`; the application runs from `0x08006000` behind it. Three ways to update, easiest first:
 
 - **Web dashboard (recommended)** — open `Tools/AxxPD_Dashboard.html` in Chrome/Edge, connect, expand **Firmware Update**, and drop a released `AxxPD.bin`. The dashboard reboots the device into the bootloader over USB and flashes it — no button holding, no extra tools. It validates the image header/CRC before touching the device, and a failed transfer leaves the device waiting safely in update mode for a retry.
+- **Command line** — `python Tools/axxpd_fwup.py [AxxPD.bin]` (pyserial) drives the same USB bootloader protocol without a browser; useful for scripted or CI updates. Defaults to `Firmware/build/AxxPD.bin`.
 - **USB DFU** — for recovery, hold the boot button while applying power (or send `dfu` over serial) to enter the STM32 ROM bootloader, then flash with [STM32CubeProgrammer](https://www.st.com/en/development-tools/stm32cubeprog.html) or `dfu-util`. Write the bootloader at `0x08000000` and the app at `0x08006000`.
 - **SWD** — connect an ST-Link to the SWD pads and flash both images:
   ```

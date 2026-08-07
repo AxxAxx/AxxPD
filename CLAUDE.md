@@ -4,11 +4,21 @@ USB-C PD 3.1 EPR bench power controller. STM32G491CCU6 (Cortex-M4F, 128 MHz).
 A small custom bootloader lives at `0x08000000`; the **app is linked at `0x08006000`**
 behind it (see `Firmware/bootloader/bl_layout.h`). `make all` builds both `AxxPD_boot.bin`
 and the header-patched `AxxPD.bin`. Firmware update = the web dashboard's Firmware Update
-panel (`fwup` reboots into the bootloader, USB upload), or ROM DFU / SWD for recovery.
+panel or `python Tools/axxpd_fwup.py` (both drive `fwup` + the bootloader USB protocol),
+or ROM DFU / SWD for recovery. NOTE: `fwup` refuses while the sink is in EPR mode even at
+a 5 V contract (pdsink has no sink-initiated EPR exit) — `axxpd_fwup.py` auto-falls-back
+to `reboot` first.
 
 ---
 
-## CURRENT STATUS — read this first (2026-08-02)
+## CURRENT STATUS — read this first (2026-08-07)
+
+**v1.1.0 (2026-08-07): "Autoscale I" feature** — new Display-menu toggle: 1 s after
+output-on the graph's I-axis ceiling is pinned to 2x the measured load current (floor
+100 mA, capped at the negotiated max; output-off reverts to charger max). Capture runs
+in the main loop (works from any screen); labels get 2 decimals below 1 A. Built clean,
+**flashed over USB via the new `Tools/axxpd_fwup.py`**, `*IDN?` confirms 1.1.0.
+On-device menu behavior + graph rescale still need an eyes-on check.
 
 **Firmware verified good: the full standalone self-test passes 53/53** on hardware —
 all voltages (5/9/15/20/28 V EPR + PPS + AVS ranges), EPR mode entry, measurements,

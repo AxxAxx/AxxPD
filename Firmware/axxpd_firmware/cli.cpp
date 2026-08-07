@@ -80,7 +80,7 @@ static inline float temp_display(float celsius) {
 //   - the *IDN? 4th field (per SCPI: Manufacturer,Model,Serial,FirmwareVersion)
 //   - Settings > System > Version on the device
 uint8_t fw_version_major = 1;
-uint8_t fw_version_minor = 0;
+uint8_t fw_version_minor = 1;
 uint8_t fw_version_patch = 0;
 
 /* "M.m.p" rendered once from the numbers above (built lazily on first use). */

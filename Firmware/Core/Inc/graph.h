@@ -23,6 +23,8 @@
 #ifndef __GRAPH_H
 #define __GRAPH_H
 
+#include <stdint.h>
+
 /** Zero buffers and mark the grid as dirty. Call once from UI_Init(). */
 void Graph_Init(void);
 
@@ -38,5 +40,12 @@ void Graph_Draw(void);
  *  history). Call when transitioning onto the GRAPH screen, since the UI
  *  performs a full LCD clear at screen transitions. */
 void Graph_InvalidateGrid(void);
+
+/** Autoscale-current override for the I axis (Display > Autoscale I).
+ *  max_ma != 0 pins the I-axis ceiling to that value (typically 2x the load
+ *  current sampled 1 s after output-on); 0 reverts to the negotiated charger
+ *  maximum. Survives Graph_Init() so screen re-entry keeps the scale; the
+ *  main loop owns the sample/clear timing. */
+void Graph_SetAutoscaleIMax(uint16_t max_ma);
 
 #endif /* __GRAPH_H */

@@ -961,6 +961,46 @@ int main(void)
       /* LTC4368 fault detection via EXTI only (no polling).
        * Polling caused false triggers from SPI DMA noise coupling. */
 
+      /* Autoscale current (Display > Autoscale I): 1 s after the output is
+       * turned on, sample the load current and pin the graph I-axis ceiling
+       * to 2x that value, so a 0.5 A load fills half the plot instead of
+       * hugging the bottom of a charger-max (e.g. 5 A) axis. Runs every loop
+       * iteration — NOT gated on the GRAPH screen — so the capture happens
+       * even when the user turns the output on from another screen and
+       * switches to the graph later. Output-off reverts to the charger max. */
+      {
+          #define AUTOSCALE_SAMPLE_DELAY_MS 1000U
+          #define AUTOSCALE_MIN_MA          100U   /* floor for no/tiny load */
+          static uint8_t  as_prev_out = 0;
+          static uint8_t  as_pending  = 0;
+          static uint32_t as_on_tick  = 0;
+          uint8_t as_out = g_output_enabled ? 1U : 0U;
+          if (!Settings_GetAutoscaleCurrent() || !as_out) {
+              as_pending = 0;
+              Graph_SetAutoscaleIMax(0);
+          } else {
+              if (!as_prev_out) {            /* output just turned on — arm */
+                  as_pending = 1;
+                  as_on_tick = now;
+              }
+              if (as_pending && (now - as_on_tick) >= AUTOSCALE_SAMPLE_DELAY_MS) {
+                  as_pending = 0;
+                  float a = g_ina_reading.current_a;
+                  if (!(a > 0.0f)) a = 0.0f;         /* negatives and NaN -> 0 */
+                  uint32_t max_ma = (uint32_t)(a * 2000.0f + 0.5f);  /* 2x load */
+                  if (max_ma < AUTOSCALE_MIN_MA) max_ma = AUTOSCALE_MIN_MA;
+                  float as_neg_a = axxpd_get_negotiated_a();
+                  if (as_neg_a > 0.1f) {             /* never zoom OUT past the charger max */
+                      uint32_t neg_ma = (uint32_t)(as_neg_a * 1000.0f + 0.5f);
+                      if (max_ma > neg_ma) max_ma = neg_ma;
+                  }
+                  if (max_ma > 65535U) max_ma = 65535U;
+                  Graph_SetAutoscaleIMax((uint16_t)max_ma);
+              }
+          }
+          as_prev_out = as_out;
+      }
+
       /* Feed graph samples — checked EVERY loop iteration (not gated by the
        * 33 ms UI refresh) so the window interval is precise: 50/100/200 ms gives
        * exactly a 5/10/20 s window, and the scroll speed tracks the setting.

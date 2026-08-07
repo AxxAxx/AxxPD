@@ -107,6 +107,11 @@ static volatile uint16_t i_max_ma;  /* current I-axis ceiling in mA */
 static uint16_t last_v_max_mv;      /* scale used for last full redraw — mismatch → rescale */
 static uint16_t last_i_max_ma;
 
+/* Autoscale-current I-axis override (0 = inactive, follow negotiated max).
+ * Deliberately NOT reset by Graph_Init(): that runs on every GRAPH screen
+ * entry and the captured scale must survive navigating away and back. */
+static volatile uint16_t autoscale_i_max_ma = 0;
+
 /* ------------------------------------------------------------------ */
 /*  Sample → pixel mapping                                             */
 /* ------------------------------------------------------------------ */
@@ -211,10 +216,13 @@ static void draw_i_axis_labels(void)
     float max_a = (float)i_max_ma / 1000.0f;
     float vals[3] = {0.0f, max_a / 2.0f, max_a};
     int   pos[3]  = {0, GRAPH_HEIGHT / 2, GRAPH_HEIGHT};
+    /* Autoscaled ceilings can be well below 1 A — one decimal would collapse
+     * the labels (0.0/0.2/0.3). Use two decimals below 1 A. */
+    const char *fmt = (i_max_ma < 1000U) ? "%-5.2f" : "%-5.1f";
     for (int k = 0; k < 3; k++) {
         int y = GRAPH_Y0 - pos[k] - 6;
         if (y < 62) y = 62;
-        snprintf(buf, sizeof(buf), "%-5.1f", (double)vals[k]);
+        snprintf(buf, sizeof(buf), fmt, (double)vals[k]);
         LCD_PutStr((uint16_t)I_AXIS_LABEL_X, (uint16_t)y, buf, FONT_SM, COL_I_LABEL, COL_BG);
     }
 }
@@ -296,7 +304,22 @@ void Graph_AddSample(float voltage_v, float current_a)
     float neg_v = axxpd_get_negotiated_v();
     float neg_a = axxpd_get_negotiated_a();
     if (neg_v > 0.5f) v_max_mv = (uint16_t)(neg_v * 1000.0f + 0.5f);
-    if (neg_a > 0.1f) i_max_ma = (uint16_t)(neg_a * 1000.0f + 0.5f);
+
+    /* I axis: the autoscale override (2x load, captured 1 s after output-on)
+     * wins over the negotiated charger maximum while it is active. */
+    uint16_t as_max = autoscale_i_max_ma;
+    if (as_max != 0U) {
+        i_max_ma = as_max;
+    } else if (neg_a > 0.1f) {
+        i_max_ma = (uint16_t)(neg_a * 1000.0f + 0.5f);
+    }
+}
+
+void Graph_SetAutoscaleIMax(uint16_t max_ma)
+{
+    autoscale_i_max_ma = max_ma;
+    /* i_max_ma itself is updated by the next Graph_AddSample(); Graph_Draw()
+     * then sees the ceiling change and does its usual full rescale redraw. */
 }
 
 void Graph_InvalidateGrid(void)

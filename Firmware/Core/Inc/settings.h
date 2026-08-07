@@ -61,7 +61,10 @@ typedef struct {
     int16_t cal_i_offset_ua;     /* current offset in microamps, default 0  */
     /* Display — graph */
     uint8_t graph_window;        /* Graph time window: 0=5s, 1=10s (default), 2=30s, 3=60s */
-    uint8_t _pad4[1];            /* alignment padding */
+    uint8_t autoscale_current;   /* was _pad4: 1=graph I-axis snaps to 2x the load current
+                                  * sampled 1 s after output-on, 0=charger max (default).
+                                  * Reuses the pad byte so struct size/CRC are unchanged
+                                  * and existing saved settings still load (read as 0). */
     /* Presets */
     Preset_t presets[PRESET_SLOTS];
 } Settings_t;
@@ -78,6 +81,7 @@ enum {
     /* Display group (50-99) */
     MI_TEMP_UNIT        = 50,
     MI_GRAPH_WINDOW     = 51,
+    MI_AUTOSCALE_I      = 52,
     /* Sound group (100-199) */
     MI_BUZZER_ENABLED   = 100,
     MI_STARTUP_BEEP     = 101,
@@ -142,6 +146,7 @@ uint8_t  Settings_GetBuzzerEnabled(void);
 uint8_t  Settings_GetStartupBeep(void);
 uint8_t  Settings_GetTempFahrenheit(void);
 uint8_t  Settings_GetGraphWindow(void);
+uint8_t  Settings_GetAutoscaleCurrent(void);
 
 void     Settings_SetBool(uint8_t fi, uint8_t val);
 uint8_t  Settings_GetBool(uint8_t fi);

@@ -28,6 +28,7 @@ const MI_Entry g_mi_table[] = {
     /* Display group */
     { MI_TEMP_UNIT,       (uint8_t)offsetof(Settings_t, temp_fahrenheit), "Temp unit"        },
     { MI_GRAPH_WINDOW,    MI_NO_FLASH,                                    "Graph window"     },
+    { MI_AUTOSCALE_I,     (uint8_t)offsetof(Settings_t, autoscale_current), "Autoscale I"    },
     /* Sound group */
     { MI_BUZZER_ENABLED,  (uint8_t)offsetof(Settings_t, buzzer_enabled),  "Buzzer"           },
     { MI_STARTUP_BEEP,    (uint8_t)offsetof(Settings_t, startup_beep),    "Startup beep"     },
@@ -64,7 +65,7 @@ static const uint16_t mode_items[] = {
 };
 
 static const uint16_t display_items[] = {
-    MI_TEMP_UNIT, MI_GRAPH_WINDOW
+    MI_TEMP_UNIT, MI_GRAPH_WINDOW, MI_AUTOSCALE_I
 };
 
 static const uint16_t sound_items[] = {
