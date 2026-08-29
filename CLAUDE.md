@@ -11,7 +11,19 @@ to `reboot` first.
 
 ---
 
-## CURRENT STATUS — read this first (2026-08-07)
+## CURRENT STATUS — read this first (2026-08-29)
+
+**UI/display polish (2026-08-29, flashed + verified via SWD):** all tool screens
+(Charger info, Self-test) now use the standard black background with a pinned yellow
+`=== Charger Info ===` header; the "Cable info" Tools entry is **hidden** (its
+`axxpd_get_cable_info` is a stub — always "No e-marker detected" — until the VCONN
+hardware rev; restore = re-add to `tools_items[]` in `menu_settings.c`). Advertised /
+negotiated currents display with **two decimals** everywhere (status bar, PDOs screen,
+Charger info, dashboard SET row, web dashboard, `ocp` reply) so e.g. a 20 V 3.25 A PDO
+no longer reads "3.2A". Status-bar SRC text moved left 25 px to fit (UGUI does not clip
+at the panel edge). Reminder from the debug session that motivated this: a source may
+only advertise >3 A when the cable e-marker is 5 A-rated — a plain cable capping an
+IKEA 65 W charger at 20 V/3.0 A is correct PD behavior, not a bug.
 
 **v1.1.0 (2026-08-07): "Autoscale I" feature** — new Display-menu toggle: 1 s after
 output-on the graph's I-axis ceiling is pinned to 2x the measured load current (floor

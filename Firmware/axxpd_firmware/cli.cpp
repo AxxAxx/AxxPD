@@ -1417,7 +1417,7 @@ static void do_protect_ocp(const char* arg) {
     int32_t steps = diff / 100;
     if (steps != 0) Settings_SetNumeric(MI_OCP_LIMIT, steps);
     INA228_SetAlertOverCurrent(&g_ina, (float)Settings_GetOcpMa() / 1000.0f);
-    char b[32]; snprintf(b, sizeof(b), "OCP set to %.1fA\r\n",
+    char b[32]; snprintf(b, sizeof(b), "OCP set to %.2fA\r\n",
                          (double)Settings_GetOcpMa() / 1000.0);
     out(b);
 }

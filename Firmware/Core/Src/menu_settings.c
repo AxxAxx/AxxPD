@@ -44,7 +44,7 @@ const MI_Entry g_mi_table[] = {
     { MI_CHARGE_COMPLETE_SEC, MI_NO_FLASH,                               "CC Hold"          },
     /* Tools group (diagnostic — no flash field) */
     { MI_TOOL_CHARGER_INFO,  MI_NO_FLASH,                                 "Charger info"     },
-    { MI_TOOL_CABLE_INFO,    MI_NO_FLASH,                                 "Cable info"       },
+    /* MI_TOOL_CABLE_INFO hidden: e-marker read needs VCONN sourcing (future hw rev) */
     { MI_TOOL_SELFTEST,      MI_NO_FLASH,                                 "Self-test"        },
     /* Calibration group — signed numeric offsets in mV and mA */
     { MI_CAL_V,              MI_NO_FLASH,                                 "V offset"         },
@@ -78,7 +78,7 @@ static const uint16_t protection_items[] = {
 };
 
 static const uint16_t tools_items[] = {
-    MI_TOOL_CHARGER_INFO, MI_TOOL_CABLE_INFO, MI_TOOL_SELFTEST
+    MI_TOOL_CHARGER_INFO, MI_TOOL_SELFTEST
 };
 
 static const uint16_t calibration_items[] = {

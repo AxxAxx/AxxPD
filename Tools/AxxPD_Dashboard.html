@@ -445,9 +445,9 @@ function parseLine(line) {
       const [pdo, type, vStr, iStr, mode] = parts;
       const setV = parseFloat(vStr) || 0;
       const setI = parseFloat(iStr) || 0;
-      $pdo.textContent = pdo + ' ' + type + ' ' + setV.toFixed(1) + 'V ' + setI.toFixed(1) + 'A ' + mode;
+      $pdo.textContent = pdo + ' ' + type + ' ' + setV.toFixed(1) + 'V ' + setI.toFixed(2) + 'A ' + mode;
       $vSet.textContent = 'SET ' + setV.toFixed(1) + ' V';
-      $iSet.textContent = 'SET ' + setI.toFixed(1) + ' A';
+      $iSet.textContent = 'SET ' + setI.toFixed(2) + ' A';
     }
     pendingCt = false;
     return;
@@ -458,7 +458,7 @@ function parseLine(line) {
       const [n, type, vStr, iStr, mode] = parts;
       const opt = document.createElement('option');
       opt.value = n;
-      opt.textContent = n + ': ' + type + ' ' + parseFloat(vStr).toFixed(1) + 'V ' + parseFloat(iStr).toFixed(1) + 'A ' + mode;
+      opt.textContent = n + ': ' + type + ' ' + parseFloat(vStr).toFixed(1) + 'V ' + parseFloat(iStr).toFixed(2) + 'A ' + mode;
       $pdoSel.appendChild(opt);
     }
     return;

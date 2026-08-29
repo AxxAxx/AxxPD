@@ -379,9 +379,11 @@ static void UI_DrawStatusBar(uint8_t output_on, float ntc_temp)
             prev_lock_drawn = ui_locked;
         }
 
-        snprintf(buf, sizeof(buf), "SRC: %s %.1fV %.1fA  ",
+        /* x=+75 (not +100): the 2-decimal amps string needs the extra width
+         * to stay inside the 320px panel (UGUI draws past the edge, no clip) */
+        snprintf(buf, sizeof(buf), "SRC: %s %.1fV %.2fA  ",
                  mode, (double)v, (double)a);
-        LCD_PutStr(DRAW_X + 100, SBAR_TY, buf, FONT_SM, bar_fg, bar_bg);
+        LCD_PutStr(DRAW_X + 75, SBAR_TY, buf, FONT_SM, bar_fg, bar_bg);
 
         /* Timer countdown — right side of status bar (only when active) */
         {
@@ -530,11 +532,13 @@ static void UI_DrawDashboard(INA228_Reading_t *r, float ntc_temp, uint8_t output
     fmt_3sig(buf, sizeof(buf), r->current_a, "A", " ");
     LCD_PutStr(COL_RIGHT, CONTENT_Y, buf, FONT_XL, COL_CURRENT, COL_BG);
 
-    /* SET current — adjust_field==2 highlights the decimal digit */
+    /* SET current — adjust_field==2 highlights the tenths digit. Two decimals:
+     * PDO maxima like 3.25A and 50mA PPS steps are not tenth-exact. */
     {
         uint32_t sa = edit_mode ? adjust_target_ma : (uint32_t)(axxpd_get_negotiated_a() * 1000.0f);
         uint8_t a_whole = (uint8_t)(sa / 1000U);
         uint8_t a_dec   = (uint8_t)((sa % 1000U) / 100U);
+        uint8_t a_cent  = (uint8_t)((sa % 100U) / 10U);
         uint8_t blink_on_i = (uint8_t)((HAL_GetTick() / 500U) & 1U);
         LCD_PutStr(COL_RIGHT, SET_Y, "SET: ", FONT_MD, COL_CURRENT, COL_BG);
         char d[2] = {(char)('0' + a_whole), 0};
@@ -545,7 +549,9 @@ static void UI_DrawDashboard(INA228_Reading_t *r, float ntc_temp, uint8_t output
         LCD_PutStr(COL_RIGHT + 92, SET_Y, d, FONT_MD,
             f2_hi ? HI_FG : COL_CURRENT,
             f2_hi ? HI_BG : COL_BG);
-        LCD_PutStr(COL_RIGHT + 106, SET_Y, "A  ", FONT_MD, COL_CURRENT, COL_BG);
+        d[0] = (char)('0' + a_cent);
+        LCD_PutStr(COL_RIGHT + 106, SET_Y, d, FONT_MD, COL_CURRENT, COL_BG);
+        LCD_PutStr(COL_RIGHT + 120, SET_Y, "A ", FONT_MD, COL_CURRENT, COL_BG);
     }
 
     /* Bottom region: normally the power + CC/CV + cable-drop readouts, but while
@@ -721,26 +727,26 @@ static void UI_DrawPDOs(float ntc_temp, uint8_t output_on)
             if (type == 0U) {
                 uint32_t mv  = ((pdo >> 10U) & 0x3FFU) * 50U;
                 uint32_t ma  = ((pdo >>  0U) & 0x3FFU) * 10U;
-                snprintf(line, sizeof(line), "%c%u: FIXED %2lu.%03luV %lu.%luA   ",
+                snprintf(line, sizeof(line), "%c%u: FIXED %2lu.%03luV %lu.%02luA  ",
                          marker, (unsigned)(start + i + 1),
                          (unsigned long)(mv / 1000U),
                          (unsigned long)(mv % 1000U),
                          (unsigned long)(ma / 1000U),
-                         (unsigned long)((ma % 1000U) / 100U));
+                         (unsigned long)((ma % 1000U) / 10U));
             } else if (type == 3U) {
                 uint32_t subtype = (pdo >> 28U) & 0x3U;
                 if (subtype == 0U) {
                     uint32_t min_mv = ((pdo >> 8U) & 0xFFU) * 100U;
                     uint32_t max_mv = ((pdo >> 17U) & 0xFFU) * 100U;
                     uint32_t max_ma = ((pdo >> 0U) & 0x7FU) * 50U;
-                    snprintf(line, sizeof(line), "%c%u: PPS %lu.%lu-%lu.%luV %lu.%luA ",
+                    snprintf(line, sizeof(line), "%c%u: PPS %lu.%lu-%lu.%luV %lu.%02luA ",
                              marker, (unsigned)(start + i + 1),
                              (unsigned long)(min_mv / 1000U),
                              (unsigned long)((min_mv % 1000U) / 100U),
                              (unsigned long)(max_mv / 1000U),
                              (unsigned long)((max_mv % 1000U) / 100U),
                              (unsigned long)(max_ma / 1000U),
-                             (unsigned long)((max_ma % 1000U) / 100U));
+                             (unsigned long)((max_ma % 1000U) / 10U));
                 } else if (subtype == 1U) {
                     uint32_t min_mv = ((pdo >> 8U) & 0xFFU) * 100U;
                     uint32_t max_mv = ((pdo >> 17U) & 0x1FFU) * 100U;
@@ -990,10 +996,10 @@ static void DecodePDO(uint32_t pdo, uint8_t idx, char *buf, uint8_t bufsz)
         /* Fixed PDO */
         uint32_t mv = ((pdo >> 10U) & 0x3FFU) * 50U;
         uint32_t ma = ((pdo >>  0U) & 0x3FFU) * 10U;
-        snprintf(buf, bufsz, "PDO%u: Fixed %lu.%luV %lu.%luA",
+        snprintf(buf, bufsz, "PDO%u: Fixed %lu.%luV %lu.%02luA",
                  (unsigned)idx,
                  (unsigned long)(mv / 1000U), (unsigned long)((mv % 1000U) / 100U),
-                 (unsigned long)(ma / 1000U), (unsigned long)((ma % 1000U) / 100U));
+                 (unsigned long)(ma / 1000U), (unsigned long)((ma % 1000U) / 10U));
     } else if (type == 3U) {
         uint32_t sub = (pdo >> 28U) & 0x3U;
         if (sub == 0U) {
@@ -1001,11 +1007,11 @@ static void DecodePDO(uint32_t pdo, uint8_t idx, char *buf, uint8_t bufsz)
             uint32_t min_mv = ((pdo >> 8U) & 0xFFU) * 100U;
             uint32_t max_mv = ((pdo >> 17U) & 0xFFU) * 100U;
             uint32_t max_ma = ((pdo >> 0U) & 0x7FU) * 50U;
-            snprintf(buf, bufsz, "PDO%u: PPS %lu.%lu-%lu.%luV %lu.%luA",
+            snprintf(buf, bufsz, "PDO%u: PPS %lu.%lu-%lu.%luV %lu.%02luA",
                      (unsigned)idx,
                      (unsigned long)(min_mv / 1000U), (unsigned long)((min_mv % 1000U) / 100U),
                      (unsigned long)(max_mv / 1000U), (unsigned long)((max_mv % 1000U) / 100U),
-                     (unsigned long)(max_ma / 1000U), (unsigned long)((max_ma % 1000U) / 100U));
+                     (unsigned long)(max_ma / 1000U), (unsigned long)((max_ma % 1000U) / 10U));
         } else if (sub == 1U) {
             /* AVS/EPR */
             uint32_t min_mv = ((pdo >> 8U) & 0xFFU) * 100U;
@@ -1029,14 +1035,14 @@ static void DecodePDO(uint32_t pdo, uint8_t idx, char *buf, uint8_t bufsz)
 /* ------------------------------------------------------------------ */
 static void Tool_DrawChargerInfo(void)
 {
-    uint16_t tool_bg = RGB(20, 20, 40);
-    LCD_Fill(0, STATUSBAR_H, SCREEN_W - 1, NAVBAR_Y - 1, tool_bg);
+    LCD_Fill(0, STATUSBAR_H, SCREEN_W - 1, NAVBAR_Y - 1, COL_BG);
 
-    /* Build scrollable line list */
+    LCD_PutStr(4, STATUSBAR_H + 2, "=== Charger Info ===", FONT_SM, COL_YELLOW, COL_BG);
+
+    /* Build scrollable line list (header is pinned above, not scrolled) */
     char lines[20][40];
     uint8_t nlines = 0;
 
-    snprintf(lines[nlines++], 40, "=== PD Source Info ===");
     snprintf(lines[nlines++], 40, "EPR capable: %s", axxpd_is_src_epr_capable() ? "Yes" : "No");
     snprintf(lines[nlines++], 40, "EPR active:  %s", axxpd_is_epr_active()      ? "Yes" : "No");
 
@@ -1066,9 +1072,9 @@ static void Tool_DrawChargerInfo(void)
 
     if (nlines < 19U) snprintf(lines[nlines++], 40, "--- SEL_LONG to exit ---");
 
-    /* Clamp scroll */
+    /* Clamp scroll — list area starts below the pinned header */
     uint8_t row_h = 18U;
-    uint8_t visible = (uint8_t)((NAVBAR_Y - STATUSBAR_H) / row_h);
+    uint8_t visible = (uint8_t)((NAVBAR_Y - STATUSBAR_H - 20U) / row_h);
     if (tool_scroll < 0) tool_scroll = 0;
     if (nlines > visible && tool_scroll > (int8_t)(nlines - visible))
         tool_scroll = (int8_t)(nlines - visible);
@@ -1077,12 +1083,12 @@ static void Tool_DrawChargerInfo(void)
     for (uint8_t r = 0; r < visible; r++) {
         int8_t li = (int8_t)(tool_scroll + (int8_t)r);
         if (li >= 0 && li < (int8_t)nlines) {
-            uint16_t y = STATUSBAR_H + r * row_h;
-            LCD_PutStr(4, y, lines[li], FONT_SM, COL_WHITE, tool_bg);
+            uint16_t y = STATUSBAR_H + 20U + r * row_h;
+            LCD_PutStr(4, y, lines[li], FONT_SM, COL_WHITE, COL_BG);
         }
     }
     ui_draw_scrollbar(nlines, visible, (uint8_t)tool_scroll,
-                      STATUSBAR_H, visible * row_h);
+                      STATUSBAR_H + 20U, visible * row_h);
 }
 
 /* ------------------------------------------------------------------ */
@@ -1090,7 +1096,7 @@ static void Tool_DrawChargerInfo(void)
 /* ------------------------------------------------------------------ */
 static void Tool_DrawCableInfo(void)
 {
-    uint16_t tool_bg = RGB(20, 40, 20);
+    uint16_t tool_bg = COL_BG;
     LCD_Fill(0, STATUSBAR_H, SCREEN_W - 1, NAVBAR_Y - 1, tool_bg);
 
     uint8_t type = 0, max_current = 0, max_voltage = 0, usb_ss = 0;
@@ -1116,7 +1122,7 @@ static void Tool_DrawCableInfo(void)
 
 static void Tool_DrawSelftest(void)
 {
-    #define ST_BG       RGB(20, 20, 40)
+    #define ST_BG       COL_BG
     #define ST_COL_PASS RGB(90, 220, 90)    /* bright green — same as output ON */
     #define ST_COL_FAIL RGB(255, 60, 60)    /* red */
     #define ST_COL_PEND RGB(160, 160, 160)  /* grey for pending/in-progress */
