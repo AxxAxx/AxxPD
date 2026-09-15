@@ -364,6 +364,14 @@ void UCPD1_IRQHandler(void)
 /* USER CODE BEGIN 1 */
 
 /**
+  * @brief EXTI line 0 — INA310 fast overcurrent alert (PA0, rising edge, rev 1.4)
+  */
+void EXTI0_IRQHandler(void)
+{
+  HAL_GPIO_EXTI_IRQHandler(INA310_ALERT_Pin);
+}
+
+/**
   * @brief EXTI line 1 — TPD4S480 ESD fault (PF1)
   */
 void EXTI1_IRQHandler(void)

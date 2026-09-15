@@ -33,8 +33,8 @@ An assembled unit is available through [Crowd Supply](https://www.crowdsupply.co
 | PD modes | Fixed PDO, PPS (3.3–21 V), AVS (15–48 V) |
 | Max power | 240 W (charger dependent) |
 | Measurement | 20-bit, ~1 mV / ~0.1 mA resolution (INA228, 6.8 mΩ) |
-| OVP | LTC4368 (~53 V) + COMP1/DAC backup |
-| OCP | LTC4368 (~7.4 A) + INA228 ALERT backup |
+| OVP | LTC4368 (~55 V) + COMP1/DAC backup |
+| OCP | INA310 fast-trip (~13 A, ~1 µs) + LTC4368 breaker (~7.4 A) + INA228 ALERT backup |
 | Display | 1.47" 320×172 IPS TFT (ST7789V, SPI) |
 | Outputs | XT30 female + 4 mm shrouded banana (parallel) |
 | MCU | STM32G491CCU6 (Cortex-M4F, 128 MHz, 256 KB flash) |
@@ -58,14 +58,15 @@ Independent protection layers, fastest first. The hardware layers act autonomous
 |---|-----------|----------|----------|
 | 1 | SMBJ58A TVS | < 1 ns | Passive VBUS clamp (~64 V) |
 | 2 | TPD4S480 | ~100 ns | CC/SBU short-to-VBUS disconnect (48 V EPR rated) |
-| 3 | LTC4368 OVP | ~6 µs | Primary over-voltage (~53 V trip) |
-| 4 | LTC4368 OCP | ~8 µs | Primary over-current (50 mV / 6.8 mΩ ≈ 7.4 A) |
-| 5 | INA228 ALERT | ~150 µs | Backup OCP (configurable), EXTI disables output |
-| 6 | COMP1 + TIM15 | ~275 µs | Backup OVP — comparator forces SHDN low, no CPU |
-| 7 | Firmware poll | ~1–10 ms | Thermal, energy and timer limits |
-| 8 | SHDN pull-down | passive | Fail-safe — output defaults OFF if MCU/LTC4368 unpowered |
+| 3 | INA310 fast-trip | ~1 µs | Fast over-current — comparator + gate clamp cut the output at ~13 A on a hard short, autonomously (no firmware) |
+| 4 | LTC4368 OVP | ~6 µs | Primary over-voltage (~55 V trip) |
+| 5 | LTC4368 OCP | ~8 µs | Primary over-current breaker (50 mV / 6.8 mΩ ≈ 7.4 A), latch-off |
+| 6 | INA228 ALERT | ~150 µs | Backup OCP (configurable), EXTI disables output |
+| 7 | COMP1 + TIM15 | ~275 µs | Backup OVP — comparator forces SHDN low, no CPU |
+| 8 | Firmware poll | ~1–10 ms | Thermal, energy and timer limits |
+| 9 | SHDN pull-down | passive | Fail-safe — output defaults OFF if MCU/LTC4368 unpowered |
 
-The LTC4368 hot-swap controller drives back-to-back MOSFETs; the COMP1/DAC backup OVP threshold tracks the negotiated voltage. Firmware adds OCP soft-start retry (default 3×) for hot-plug inrush, charger-disconnect shutoff, and a 1.5 s output-toggle cooldown.
+The LTC4368 hot-swap controller drives back-to-back MOSFETs; the COMP1/DAC backup OVP threshold tracks the negotiated voltage. The **INA310 fast-trip tier** clamps a hard output short in about a microsecond — fast enough that the charger's own protection never trips, so a dead short no longer resets the whole unit. Firmware adds three behaviours on top: **verify-before-latch** (a fast-trip is checked against the INA228 before it becomes a fault, so a harmless ESD transient rides through instead of latching), **output-voltage-progress OCP retry** (a large capacitive load is allowed to charge across several soft-start retries while a genuine dead short still latches promptly), charger-disconnect shutoff, and a 1.5 s output-toggle cooldown.
 
 ## User Interface
 

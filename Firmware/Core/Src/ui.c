@@ -1512,6 +1512,8 @@ void UI_Update(INA228_Reading_t *reading, float ntc_temp, uint8_t output_on)
                     detail = "OCP (LTC4368)";
                 else if (g_fault_source == FAULT_INA228_OCP)
                     detail = "OCP (INA228)";
+                else if (g_fault_source == FAULT_INA310)
+                    detail = "OCP (fast trip)";
                 else if (g_fault_source == FAULT_LM5166_PGOOD)
                     detail = "PGOOD (LM5166)";
                 else if (g_fault_source == FAULT_TPD4S480)

@@ -5,7 +5,7 @@
 
 /**
  * @file    ntc.c
- * @brief   NTC thermistor temperature driver via ADC2 (PA0).
+ * @brief   NTC thermistor temperature driver via ADC2 (PB2).
  *
  * Voltage divider: 3.3V -> 10K pullup -> ADC pin -> NTC 10K (B=3380K) -> GND
  *

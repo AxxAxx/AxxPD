@@ -102,6 +102,8 @@ extern volatile float g_peak_power_w;
 #define FAULT_WH_LIMIT        9
 #define FAULT_CHARGE_COMPLETE 10
 #define FAULT_THERMAL         11
+/* 12 = FAULT_INA_SENSOR (defined in main.c) */
+#define FAULT_INA310          13   /* INA310 fast-trip overcurrent (hardware rev 1.4) */
 
 #define FAULT_LOG_SIZE  8
 
@@ -156,6 +158,18 @@ void       Timer_Stop(void);
 #define BUZZER_GPIO_Port GPIOA
 #define LM5166_FGOOD_Pin GPIO_PIN_9
 #define LM5166_FGOOD_GPIO_Port GPIOB
+
+/* --- Hardware rev 1.4: INA310 fast-trip overcurrent tier --- */
+/* INA310 CMPOUT: open-drain, idles LOW, pulses HIGH on >13.3 A fast trip
+ * (external 10k pull-up to 3.3V). Rising-edge EXTI notifies the MCU; the
+ * hardware gate clamp acts autonomously in ~1 us regardless. */
+#define INA310_ALERT_Pin GPIO_PIN_0
+#define INA310_ALERT_GPIO_Port GPIOA
+/* INA310 RESET/latch: HIGH = latch mode, LOW = transparent mode. Firmware
+ * drives it LOW (transparent) so a glitch self-clears with no output cut;
+ * a real short is held off by the LTC4368 latch (RETRY=GND) instead. */
+#define INA310_RST_Pin GPIO_PIN_2
+#define INA310_RST_GPIO_Port GPIOA
 
 /* USER CODE BEGIN Private defines */
 

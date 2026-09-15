@@ -102,6 +102,46 @@ static volatile uint8_t  ocp_retry_pending = 0;    /* 1 = waiting to re-enable o
  * cycle and retry into the short forever instead of latching off. */
 #define OCP_RETRY_RESET_MS    1500U
 
+/* --- INA310 fast-trip tier (hardware rev 1.4) ---------------------------------
+ * The INA310 comparator + BJT gate clamp cut the pass FETs in ~1 us on a >13.3 A
+ * fast overcurrent, autonomously (no MCU action needed). It runs in transparent
+ * mode (INA310_RST driven LOW), so a transient (ESD glitch) self-clears with no
+ * output interruption. A genuine sustained short is caught and held off by the
+ * LTC4368 breaker (RETRY=GND latch) via its own FLT->EXTI->ocp_handle_trip path.
+ * The INA310 ALERT (PA0, rising edge) only NOTIFIES the MCU so it can (a) log the
+ * event and (b) verify-before-latch: read the INA228 after the trip and treat a
+ * still-live output with normal current as a harmless glitch to ride through,
+ * while escalating repeated trips to a real fault. Never cut the output directly
+ * from the ALERT path — the hardware already did whatever was needed. */
+static volatile uint8_t  g_ina310_trip_pending = 0;  /* ALERT edge seen, awaiting verify */
+volatile uint32_t        g_ina310_trip_count   = 0;  /* lifetime fast-trip events (diag, CLI-visible) */
+static uint8_t  g_ina310_glitch_count = 0;           /* glitches in the current window */
+static uint32_t g_ina310_glitch_win_tick = 0;        /* start of the glitch window */
+#define INA310_GLITCH_WINDOW_MS 1000U   /* glitches counted within this window */
+#define INA310_GLITCH_ESCALATE  5U      /* this many glitches/window => real fault */
+#define INA310_VERIFY_OK_A      8.0f    /* current below this after a trip => glitch */
+
+/* --- dV-progress adaptive OCP retry (hardware rev 1.4) ------------------------
+ * Replaces the pure "VOUT<1V => dead-short latch" heuristic with progress
+ * tracking so a large capacitive load can charge across several retries (its
+ * held VOUT climbs each attempt) while a genuine dead short (VOUT stuck) still
+ * latches promptly. Progress is measured from a FRESH INA228 read in the
+ * main-loop retry re-arm block (not the ISR). Safety invariant preserved: with
+ * no measured progress the original VOUT<1V dead-short latch still fires. */
+/* All four cross the ISR/main-loop boundary (written in the main-loop retry
+ * monitor, read/written in ocp_handle_trip which also runs in EXTI ISR context)
+ * — mark volatile to match the file convention and stay safe under inlining/LTO. */
+static volatile float    g_ocp_retry_vout_prev = -1.0f;  /* VOUT before previous retry (<0 = none yet) */
+static volatile uint8_t  g_ocp_noprogress      = 0;      /* consecutive retries with no VOUT gain */
+static volatile uint8_t  g_ocp_allow_extra     = 0;      /* 1 = cap charging, extend retry budget */
+static volatile uint16_t g_ocp_total_retries   = 0;      /* retries this output session (lifetime cap) */
+#define OCP_PROGRESS_MIN_V  0.3f   /* min VOUT gain between retries to count as progress */
+#define OCP_RETRY_CAP_MAX   25U    /* hard cap on retries while progressing (bounded) */
+#define OCP_RETRY_LIFETIME_MAX 40U /* absolute retry ceiling per session — latch beyond this
+                                    * regardless of the reset window, so a pathologically slow
+                                    * retry cycle (e.g. a wedged I2C bus stretching a cycle past
+                                    * OCP_RETRY_RESET_MS) can never retry into a short forever. */
+
 /* --- Output toggle cooldown (MOSFET thermal protection) --- */
 static uint32_t g_output_enable_tick = 0; /* tick of last Output_Enable() call */
 #define OUTPUT_TOGGLE_COOLDOWN_MS 1500U   /* min interval between enable events */
@@ -271,6 +311,7 @@ static void MX_TIM8_Init(void);
 static void MX_DAC1_Init(void);
 /* USER CODE BEGIN PFP */
 static void I2C3_BusRecover(void);
+static void ocp_handle_trip(uint8_t fault_source);  /* rev 1.4: called from EXTI + main loop */
 /* USER CODE END PFP */
 
 /* Private user code ---------------------------------------------------------*/
@@ -1106,6 +1147,36 @@ int main(void)
           /* Slow I2C latch-clear and bleed-disable happen first, outside the
            * critical section (they must not run with IRQs masked). */
           INA228_ClearAlertLatch(&g_ina);
+          /* dV-progress (rev 1.4): the output is currently OFF but the caps hold
+           * their charge (bleed still off), so this is a CLEAN VOUT read. If the
+           * held voltage has climbed >= OCP_PROGRESS_MIN_V since the previous
+           * retry, a capacitive load is charging — set g_ocp_allow_extra so
+           * ocp_handle_trip extends the retry budget. After two stagnant reads,
+           * clear it so a genuine short falls back to the dead-short latch. */
+          {
+              float vout_now = 0.0f;
+              if (INA228_ReadVoltage(&g_ina, &vout_now) == HAL_OK) {
+                  if (g_ocp_retry_vout_prev >= 0.0f) {
+                      if (vout_now >= g_ocp_retry_vout_prev + OCP_PROGRESS_MIN_V) {
+                          g_ocp_allow_extra = 1;   /* VOUT climbing => a cap is charging */
+                          g_ocp_noprogress = 0;
+                      } else {
+                          if (g_ocp_noprogress < 255) g_ocp_noprogress++;
+                          /* Drop the cap-charging assumption AT ONCE if the output
+                           * is collapsed (a short reads near 0 V), or after two
+                           * stagnant reads otherwise. Clearing immediately on a
+                           * collapsed read is the safety fix: it stops a dead short
+                           * that appears right after a capacitive-progress event
+                           * from inheriting a stale g_ocp_allow_extra and skipping
+                           * its latch. A genuinely-charging cap reads well above
+                           * 1 V, so its ride-through is unaffected. */
+                          if (vout_now < 1.0f || g_ocp_noprogress >= 2)
+                              g_ocp_allow_extra = 0;
+                      }
+                  }
+                  g_ocp_retry_vout_prev = vout_now;
+              }
+          }
           cc_low_since = 0;
           HAL_GPIO_WritePin(BLEED_CTRL_GPIO_Port, BLEED_CTRL_Pin, GPIO_PIN_RESET);
           /* Re-arm atomically w.r.t. the OCP EXTI/COMP ISR: open the suppression
@@ -1167,6 +1238,43 @@ int main(void)
               FaultLog_Push(FAULT_COMP_OVP,
                             (uint16_t)(g_ina_reading.voltage_v * 1000.0f),
                             (uint16_t)(g_ina_reading.current_a * 1000.0f));
+          }
+      }
+
+      /* INA310 fast-trip verify-before-latch (rev 1.4). The ALERT ISR only
+       * flagged that the hardware fast-clamp fired (~1 us, autonomous); decide
+       * here what it meant:
+       *  - If a real fault already took over (LTC4368 latched -> g_hw_fault, or a
+       *    retry is pending, or the output is already off), that path owns
+       *    recovery — just consume the flag.
+       *  - Else the output is still live: take a FRESH INA228 current reading.
+       *      * >= INA310_VERIFY_OK_A: a real fast overcurrent the slow tiers have
+       *        not latched yet — hand it to the OCP retry policy.
+       *      * below that: a harmless transient (ESD ground-bounce / fast di/dt)
+       *        that transparent-mode already rode through with no output cut.
+       *        Ride through, but if they recur too fast, escalate to a fault. */
+      if (g_ina310_trip_pending) {
+          g_ina310_trip_pending = 0;
+          if (!g_hw_fault && !ocp_retry_pending && g_output_enabled) {
+              float amps = 0.0f;
+              HAL_StatusTypeDef st = INA228_ReadCurrent(&g_ina, &amps);
+              uint8_t escalate = 0;
+              if (st == HAL_OK && amps >= INA310_VERIFY_OK_A) {
+                  escalate = 1;   /* real overcurrent still flowing */
+              } else {
+                  /* Transient — count it within a sliding window. */
+                  if ((int32_t)(now - g_ina310_glitch_win_tick) > (int32_t)INA310_GLITCH_WINDOW_MS) {
+                      g_ina310_glitch_win_tick = now;
+                      g_ina310_glitch_count = 0;
+                  }
+                  if (g_ina310_glitch_count < 255) g_ina310_glitch_count++;
+                  if (g_ina310_glitch_count >= INA310_GLITCH_ESCALATE) escalate = 1;
+              }
+              if (escalate && (int32_t)(g_fault_suppress_until - now) <= 0) {
+                  __disable_irq();
+                  if (g_output_enabled && !g_hw_fault) ocp_handle_trip(FAULT_INA310);
+                  __enable_irq();
+              }
           }
       }
 
@@ -1918,6 +2026,10 @@ static void MX_GPIO_Init(void)
   /*Configure GPIO pin Output Level — LTC4368 SHDN low = output disabled at boot */
   HAL_GPIO_WritePin(LTC4368_SHDN_GPIO_Port, LTC4368_SHDN_Pin, GPIO_PIN_RESET);
   HAL_GPIO_WritePin(TFT_RESET_GPIO_Port, TFT_RESET_Pin, GPIO_PIN_RESET);
+  /* INA310 RESET low = transparent mode (rev 1.4). Set before HAL_GPIO_Init so
+   * the pin never momentarily selects latch mode. The IC's internal 2M pulldown
+   * already holds transparent until we drive it, so this is fail-safe. */
+  HAL_GPIO_WritePin(INA310_RST_GPIO_Port, INA310_RST_Pin, GPIO_PIN_RESET);
 
   /*Configure GPIO pin : LTC4368_SHDN_Pin (PA1) — push-pull output for output switch */
   GPIO_InitStruct.Pin = LTC4368_SHDN_Pin;
@@ -1944,7 +2056,24 @@ static void MX_GPIO_Init(void)
   GPIO_InitStruct.Pull = GPIO_PULLUP;
   HAL_GPIO_Init(LTC4368_FLT_GPIO_Port, &GPIO_InitStruct);
 
+  /*Configure GPIO pin : INA310_RST_Pin (PA2) — push-pull output, transparent mode (rev 1.4) */
+  GPIO_InitStruct.Pin = INA310_RST_Pin;
+  GPIO_InitStruct.Mode = GPIO_MODE_OUTPUT_PP;
+  GPIO_InitStruct.Pull = GPIO_NOPULL;
+  GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
+  HAL_GPIO_Init(INA310_RST_GPIO_Port, &GPIO_InitStruct);
+
+  /*Configure GPIO pin : INA310_ALERT_Pin (PA0) — rising edge = fast overcurrent trip.
+   * Idles LOW (external pull), pulses HIGH on trip. No internal pull (external
+   * 10k pull-up + open-drain define the idle state; an internal pull would fight it). */
+  GPIO_InitStruct.Pin = INA310_ALERT_Pin;
+  GPIO_InitStruct.Mode = GPIO_MODE_IT_RISING;
+  GPIO_InitStruct.Pull = GPIO_NOPULL;
+  HAL_GPIO_Init(INA310_ALERT_GPIO_Port, &GPIO_InitStruct);
+
   /* Enable EXTI NVIC for all fault pins */
+  HAL_NVIC_SetPriority(EXTI0_IRQn, 1, 0);       /* INA310_ALERT (PA0) fast OCP */
+  HAL_NVIC_EnableIRQ(EXTI0_IRQn);
   HAL_NVIC_SetPriority(EXTI1_IRQn, 1, 0);       /* TPD4S480_FLT (PF1) */
   HAL_NVIC_EnableIRQ(EXTI1_IRQn);
   HAL_NVIC_SetPriority(EXTI3_IRQn, 1, 0);       /* LTC4368_FLT (PA3) */
@@ -2007,6 +2136,13 @@ void Output_Enable(void) {
     ocp_retry_count = 0;
     ocp_retry_pending = 0;
     cc_low_since = 0;
+    /* Fresh output-enable — clear rev 1.4 fast-trip / dV-progress state so a new
+     * session starts from a known baseline (no stale "cap charging" flag). */
+    g_ina310_trip_pending = 0;
+    g_ocp_allow_extra = 0;
+    g_ocp_retry_vout_prev = -1.0f;
+    g_ocp_noprogress = 0;
+    g_ocp_total_retries = 0;
     HAL_GPIO_WritePin(BLEED_CTRL_GPIO_Port, BLEED_CTRL_Pin, GPIO_PIN_RESET);
     /* Drive SHDN high via PA1 GPIO — reconfigure from TIM15 AF to push-pull */
     GPIO_InitTypeDef gpio = {0};
@@ -2145,22 +2281,45 @@ static void ocp_handle_trip(uint8_t fault_source) {
      * OCP_RETRY_RESET_MS for why this must exceed the retry+suppression cycle. */
     if (ocp_retry_count > 0 && (now - ocp_retry_tick) > OCP_RETRY_RESET_MS) {
         ocp_retry_count = 0;
+        /* Fresh fault cycle — clear dV-progress state so a later dead short
+         * can't inherit a stale "capacitive load charging" flag and skip its
+         * dead-short latch below. */
+        g_ocp_allow_extra = 0;
+        g_ocp_retry_vout_prev = -1.0f;
+        g_ocp_noprogress = 0;
     }
 
-    /* [FIX 2026-08-01] Dead-short latch: this trip is a RE-trip after a
-     * soft-start retry (counter still running, i.e. the reset window above
-     * did not clear it) AND a fresh, trusted INA228 reading shows the output
-     * sitting near 0 V — that is a hard short, not charging inrush. Retrying
-     * into it hammers the pass FETs and (at ≥15 V contracts) can provoke a
-     * charger hard reset, so latch the fault immediately instead of consuming
-     * the remaining retries. Trips with a non-collapsed output voltage (or
-     * with no valid reading) keep the normal soft-start retry behaviour. */
-    if (ocp_retry_count > 0 && g_ina_valid &&
-        g_ina_reading.voltage_v < 1.0f) {
+    /* [FIX 2026-08-01, extended rev 1.4] Dead-short latch vs. capacitive-load
+     * ride-through. The main-loop retry monitor (see OCP retry re-arm block)
+     * takes a fresh INA228 VOUT reading before each retry and sets
+     * g_ocp_allow_extra when VOUT is climbing attempt-over-attempt — i.e. a
+     * large capacitor is charging, not a short. In that case extend the retry
+     * budget (bounded by OCP_RETRY_CAP_MAX) so the cap can finish charging.
+     * With NO measured progress, keep the original behaviour: a RE-trip (retry
+     * counter still running) with a fresh, trusted near-0 V reading is a hard
+     * short — latch immediately rather than hammer the FETs / provoke a charger
+     * hard reset. Trips with a non-collapsed output (or no valid reading, or
+     * before the first retry) keep the normal soft-start retry behaviour. */
+    if (g_ocp_total_retries >= OCP_RETRY_LIFETIME_MAX) {
+        allowed = 0;   /* absolute per-session retry ceiling reached — latch */
+    } else if (g_ocp_allow_extra) {
+        if (allowed < OCP_RETRY_CAP_MAX) allowed = OCP_RETRY_CAP_MAX;
+    } else if (ocp_retry_count > 0 && g_ocp_noprogress >= 1 &&
+               g_ocp_retry_vout_prev >= 0.0f && g_ocp_retry_vout_prev < 1.0f) {
+        /* Confirmed hard short: the clean, output-off VOUT read taken by the
+         * retry monitor is collapsed (<1 V) AND at least one retry showed no
+         * progress (so it is not a capacitor still charging). Using the monitor's
+         * own fresh reading (not the async g_ina_reading cache) keeps this
+         * decision consistent with the progress logic. The g_ocp_noprogress guard
+         * delays the latch by ~1-2 retries vs. the old immediate latch, which is
+         * safe on rev 1.4 because the INA310 clamps each retry's inrush in ~1 us,
+         * and it stops a large capacitive load (held VOUT starts low but climbs)
+         * from being mis-latched as a dead short. */
         allowed = 0;   /* force the latch branch below */
     }
 
     if (ocp_retry_count < allowed) {
+        if (g_ocp_total_retries < 0xFFFFU) g_ocp_total_retries++;
         /* Inrush likely — cut SHDN but keep bleed OFF so output caps stay
          * charged.  This way the retry re-enable sees a smaller voltage delta
          * to the load, reducing inrush on the next try. */
@@ -2185,6 +2344,20 @@ static void ocp_handle_trip(uint8_t fault_source) {
 void HAL_GPIO_EXTI_Callback(uint16_t GPIO_Pin) {
     /* Suppress ALL faults during inrush/PDO transition window */
     if ((int32_t)(g_fault_suppress_until - HAL_GetTick()) > 0) return;
+
+    if (GPIO_Pin == INA310_ALERT_Pin) {
+        /* INA310 fast-trip (rev 1.4): the hardware gate clamp already acted in
+         * ~1 us. Do NOT cut the output here — a real short is held off by the
+         * LTC4368 (its FLT edge runs the retry policy separately), and a glitch
+         * self-clears in transparent mode. Just record the event; the main loop
+         * verifies against the INA228 (verify-before-latch) and escalates only
+         * if trips repeat. Keep this ISR minimal so it can't starve UCPD. */
+        if (g_output_enabled && !g_hw_fault) {
+            g_ina310_trip_pending = 1;
+            g_ina310_trip_count++;
+        }
+        return;
+    }
 
     if (GPIO_Pin == LTC4368_FLT_Pin) {
         /* Re-read pin to reject noise glitches */

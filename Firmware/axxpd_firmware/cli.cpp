@@ -1443,13 +1443,16 @@ static void do_protect_ovp(const char* arg) {
 }
 
 // do_protect_status() — report active faults from g_fault_source
+extern volatile uint32_t g_ina310_trip_count;  /* rev 1.4 fast-trip event counter */
+
 static void do_protect_status() {
-    char b[64];
+    char b[80];
     snprintf(b, sizeof(b), "fault=%d src=%u", (int)g_hw_fault, (unsigned)g_fault_source);
     out(b);
     if (g_fault_source == FAULT_INA228_OCP)      out(" INA228_OCP");
     else if (g_fault_source == FAULT_COMP_OVP)   out(" COMP1_OVP");
     else if (g_fault_source == FAULT_LTC4368)    out(" LTC4368");
+    else if (g_fault_source == FAULT_INA310)     out(" INA310_FASTTRIP");
     else if (g_fault_source == FAULT_TPD4S480)   out(" TPD4S480");
     else if (g_fault_source == FAULT_LM5166_PGOOD) out(" LM5166_PG");
     else if (g_fault_source == FAULT_OPP)        out(" OPP");
@@ -1459,6 +1462,8 @@ static void do_protect_status() {
     else if (g_fault_source == FAULT_CHARGE_COMPLETE) out(" CHARGE_COMPLETE");
     else if (g_fault_source == FAULT_THERMAL)    out(" THERMAL");
     outln();
+    snprintf(b, sizeof(b), "fasttrips=%lu", (unsigned long)g_ina310_trip_count);
+    out(b); outln();
 }
 
 // do_protect_clear() — clear latched faults
