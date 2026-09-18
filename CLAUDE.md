@@ -11,7 +11,27 @@ to `reboot` first.
 
 ---
 
-## CURRENT STATUS — read this first (2026-08-29)
+## CURRENT STATUS — read this first (2026-09-18)
+
+**Protection redesign (rev 1.4) — firmware on branch `hardware_1_4` (commit `58fbc1c`),
+reviewed but NOT hardware-tested; NOT pushed.** The output now switches off far faster on a
+hard short. A discrete **INA310 fast-trip tier** (an analog current comparator on the existing
+6.8 mΩ shunt) clamps the MOSFET gate in ~1 µs at ~13 A, on top of the existing LTC4368 breaker —
+fast enough to keep the cable-side let-through under the charger's own short-circuit protection,
+so a dead short no longer resets the whole unit (the current LTC4368-only board measured ~250 µs
+to cut a near-short). Firmware adds: fault `FAULT_INA310` (13) — display "OCP (fast trip)",
+CLI `INA310_FASTTRIP`, `fasttrips=` in `protect status`; new signals PA0 = INA310_ALERT (EXTI)
+and PA2 = INA310_RST (driven LOW = transparent mode); **verify-before-latch** (the ISR only
+records the event — the hardware clamp already acted — and the main loop re-reads INA228: ≥8 A
+escalates to the fault/retry path, an ESD glitch rides through); and a **dV-progress adaptive
+OCP retry** (a large capacitive load charges across many soft-start retries while a genuine dead
+short latches in ~2). Builds clean (app 204 KB / 86 %); firmware version still v1.1.0 (bump when
+finalized). The rev-1.4 PCB is being ordered — **nothing on the new tier is hardware-proven yet**;
+the gating test is a 0 Ω short at 48 V across a charger fleet. **Do NOT run CubeMX regen** on the
+`.ioc` (it is divergent and hand-maintained: PA0/PA2/PA1/SHDN). Full detail:
+`AxxPD_dev/Documentation/HANDOVER_rev1_4_protection_2026-09-15.md` (private dev repo).
+
+## CURRENT STATUS (2026-08-29)
 
 **UI/display polish (2026-08-29, flashed + verified via SWD):** all tool screens
 (Charger info, Self-test) now use the standard black background with a pinned yellow
@@ -83,7 +103,8 @@ guards as defense-in-depth) is in place.
 2. Push `main`; send the PDF report via the AxxPdfTelegram tool at
    `C:\Users\Axel Johansson\Nextcloud\2_Project\00_AxxProjects\AxxPdfTelegram`.
 
-Full detail: `Documentation/HANDOVER_2026-08-01.md`.
+(The historical `Documentation/HANDOVER_2026-08-01.md` bug-hunt notes were removed in the
+2026-09-18 doc cleanup — the resolution is summarized above.)
 
 ---
 
